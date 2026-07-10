@@ -215,6 +215,6 @@ layout_direction: VERTICAL
 ├─────────────────────────────┤
 │  [设置] (Button)            │  v=MINIMUM, h=MAXIMUM, 50px
 ├─────────────────────────────┤
-│  [退出] (Button)            │  v=MINIMUM, h=MAXIMUM, 填充剩余
+│  [退出] (Button)            │  v=MINIMUM, h=MAXIMUM, 50px
 └─────────────────────────────┘
 ```
