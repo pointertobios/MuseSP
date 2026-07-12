@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <!-- 圆心 (50,50) 半径 28，缺口在右上 (45° → -45° 开口)
+       弧从 45° 顺时针走长弧到 -45° (315°) -->
+  <path d="M 69.8 69.8 A 28 28 0 1 1 69.8 30.2"
+        fill="none" stroke="white" stroke-width="7" stroke-linecap="round"/>
+  <!-- 箭头在 (-45°) 处，顺时针切线方向 (0.707, 0.707)，即右下 -->
+  <polyline points="60,28 69.8,30.2 68,21"
+            fill="none" stroke="white" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

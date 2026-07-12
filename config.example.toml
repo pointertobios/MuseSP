@@ -1,0 +1,6 @@
+[gameplay]
+music_assets_path = ["assets/builtin_musics"]
+
+[debug.ui]
+component_border = false
+render_profile = true

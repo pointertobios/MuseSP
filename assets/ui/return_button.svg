@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <!-- 指向左边的等边三角形，边长 70，圆角，80% 不透明度 -->
+  <path d="M 19.7 50 L 80.3 15 L 80.3 85 Z"
+        fill="white" fill-opacity="0.8"
+        stroke="white" stroke-opacity="0.8"
+        stroke-width="5" stroke-linejoin="round"/>
+</svg>

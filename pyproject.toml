@@ -9,7 +9,9 @@ requires-python = ">=3.14"
 description = "Add your description here"
 readme = "README.md"
 dependencies = [
+    "numpy>=2.5.1",
     "pygame-ce>=2.5.7",
+    "zstd>=1.5.7.3",
 ]
 
 [project.scripts]
