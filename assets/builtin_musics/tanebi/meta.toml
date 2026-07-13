@@ -1,9 +1,0 @@
-[music]
-name = "焚音打"
-author = "MyGO!!!!!"
-cover = "tanebi.png"
-music = "tanebi.wav"
-# {难度 = 关卡路径}
-levels = { 2 = "level/0.json", 5 = "level/1.json", 10 = "level/2.json", 12 = "level/3.json" }
-
-[gameplay]

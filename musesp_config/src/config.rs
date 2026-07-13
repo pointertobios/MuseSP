@@ -82,7 +82,6 @@ pub fn load_config() -> Config {
                     .and_then(|u| u.get("render_profile"))
                     .and_then(|v| v.as_bool())
                     .unwrap_or(true);
-                eprintln!("load_config: component_border={}", component_border);
                 Config {
                     gameplay,
                     debug: DebugConfig {

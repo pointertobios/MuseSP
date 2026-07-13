@@ -59,6 +59,11 @@ pub trait ComponentTrait: Any + Send {
     fn set_scroll_items(&mut self, _items: Vec<Box<dyn ComponentTrait>>) {}
     fn set_image_path(&mut self, _path: &str) {}
 
+    /// 递归计算整棵子树的布局。子类可覆写以在布局后执行额外操作。
+    fn layout(&mut self, h_override: Option<Direction>) {
+        self.base_mut().do_layout(h_override);
+    }
+
     fn item_id(&self) -> Option<&str> {
         self.base().item_id.as_deref()
     }
@@ -89,6 +94,11 @@ pub struct ComponentBase {
     pub debug_border_color: (u8, u8, u8, u8),
     pub item_id: Option<String>,
     pub name: Option<String>,
+}
+
+impl ComponentTrait for ComponentBase {
+    fn base(&self) -> &ComponentBase { self }
+    fn base_mut(&mut self) -> &mut ComponentBase { self }
 }
 
 impl ComponentBase {
@@ -260,7 +270,7 @@ impl ComponentBase {
                 }
             } else {
                 let dummy = WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     position: winit::dpi::PhysicalPosition::new(0.0, 0.0),
                 };
                 for handler in handlers.iter_mut() {
@@ -279,7 +289,7 @@ impl ComponentBase {
 
     pub fn dispatch_event(&mut self, event: &WindowEvent) -> bool {
         match event {
-            WindowEvent::CursorMoved { position, .. } => {
+            WindowEvent::CursorMoved { device_id, position } => {
                 self.cursor_x = position.x;
                 self.cursor_y = position.y;
                 let (lx, ly) = self.local_pos(position.x, position.y);
@@ -288,7 +298,7 @@ impl ComponentBase {
                 }
                 let local_pos = winit::dpi::PhysicalPosition::new(lx as f64, ly as f64);
                 let local_event = WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: *device_id,
                     position: local_pos,
                 };
                 let n = self.children.len();
@@ -414,7 +424,13 @@ impl ComponentBase {
         }
     }
 
+    /// 便捷方法：通过 ComponentTrait 分发 layout。调用方持有 `ComponentBase` 时使用。
     pub fn layout(&mut self, h_override: Option<Direction>) {
+        <ComponentBase as ComponentTrait>::layout(self, h_override);
+    }
+
+    /// 内部布局实现：排列子组件后递归 layout 子组件（通过 trait 分发）。
+    pub(crate) fn do_layout(&mut self, h_override: Option<Direction>) {
         let dir = h_override.unwrap_or(self.layout_direction);
         if dir == Direction::Vertical {
             self.layout_axis(false);
@@ -423,7 +439,7 @@ impl ComponentBase {
         }
         let n = self.children.len();
         for i in 0..n {
-            self.children[i].base_mut().layout(None);
+            self.children[i].layout(None);
         }
     }
 

@@ -15,17 +15,6 @@ pub struct MenuPage {
     menu_h: i32,
 }
 
-struct SimpleComp {
-    base: ComponentBase,
-}
-impl ComponentTrait for SimpleComp {
-    fn base(&self) -> &ComponentBase {
-        &self.base
-    }
-    fn base_mut(&mut self) -> &mut ComponentBase {
-        &mut self.base
-    }
-}
 
 impl MenuPage {
     pub fn new() -> Self {
@@ -110,7 +99,7 @@ impl AnyPage for MenuPage {
         self.page
             .root
             .children
-            .push(Box::new(SimpleComp { base: row }));
+            .push(Box::new(row));
 
         let mut bot = Spacer::new(0, 0);
         bot.base.v_constraint = Constraintable::Maximum;

@@ -1,6 +1,6 @@
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
-use crate::components::core::{ComponentBase, ComponentTrait};
+use crate::components::core::{ComponentBase, ComponentTrait, Direction};
 use crate::renderer::UIRenderer;
 
 pub struct ScrollList {
@@ -89,12 +89,20 @@ impl ComponentTrait for ScrollList {
         let dx = self.base.x + offset_x;
         let dy = self.base.y + offset_y;
         self.draw_self(renderer, dx, dy);
+        // 裁剪子组件绘制到列表区域内，对齐 Python surface.set_clip
+        renderer.push_clip(dx, dy, self.base.width, self.base.height);
         for child in &self.base.children {
             let cy = child.base().y;
             if -child.base().height < cy && cy < self.base.height {
                 child.draw(renderer, dx, dy);
             }
         }
+        renderer.pop_clip();
+    }
+
+    fn layout(&mut self, h_override: Option<Direction>) {
+        self.base.do_layout(h_override);
+        self.propagate_width();
     }
 
     fn dispatch_event(&mut self, event: &WindowEvent) -> bool {
@@ -103,7 +111,7 @@ impl ComponentTrait for ScrollList {
                 let (lx, ly) = self.base.local_pos(self.base.cursor_x, self.base.cursor_y);
                 if self.base.in_rect(lx, ly) {
                     let scroll_amount = match delta {
-                        MouseScrollDelta::LineDelta(_, y) => (*y * 20.0) as i32,
+                        MouseScrollDelta::LineDelta(_, y) => (*y * 24.0) as i32,
                         MouseScrollDelta::PixelDelta(pos) => pos.y as i32,
                     };
                     let new_scroll = (self.scroll - scroll_amount).clamp(0, self.max_scroll);
@@ -114,13 +122,13 @@ impl ComponentTrait for ScrollList {
                     return true;
                 }
             }
-            WindowEvent::CursorMoved { position, .. } => {
+            WindowEvent::CursorMoved { device_id, position } => {
                 let (lx, ly) = self.base.local_pos(position.x, position.y);
                 if !self.base.handle_mouse_move(lx, ly, event) {
                     return false;
                 }
                 let local_event = WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: *device_id,
                     position: winit::dpi::PhysicalPosition::new(lx as f64, ly as f64),
                 };
                 return self.dispatch_to_visible_children(&local_event);
@@ -175,11 +183,14 @@ impl ComponentTrait for ScrollList {
 impl ScrollList {
     fn dispatch_to_visible_children(&mut self, event: &WindowEvent) -> bool {
         let n = self.base.children.len();
+        // 将光标坐标转换为 ScrollList 本地坐标，和 Python _shift_event 对齐
+        let local_cx = self.base.cursor_x - self.base.x as f64;
+        let local_cy = self.base.cursor_y - self.base.y as f64;
         for i in 0..n {
             let cy = self.base.children[i].base().y;
             if -self.base.children[i].base().height < cy && cy < self.base.height {
-                self.base.children[i].base_mut().cursor_x = self.base.cursor_x;
-                self.base.children[i].base_mut().cursor_y = self.base.cursor_y;
+                self.base.children[i].base_mut().cursor_x = local_cx;
+                self.base.children[i].base_mut().cursor_y = local_cy;
                 if !self.base.children[i].dispatch_event(event) {
                     return false;
                 }

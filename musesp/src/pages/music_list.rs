@@ -7,9 +7,9 @@ use musesp_ui::components::button::Button;
 use musesp_ui::components::core::{ComponentBase, ComponentTrait, Constraintable, Direction};
 use musesp_ui::components::image::{Image, ImageMode};
 use musesp_ui::components::image_button::ImageButton;
-use musesp_ui::components::label::Label;
 use musesp_ui::components::scroll_list::ScrollList;
 use musesp_ui::components::spacer::Spacer;
+use musesp_ui::renderer::UIRenderer;
 use musesp_ui::router::{AnyPage, NavAction, Page};
 
 use crate::gameplay_page::GameplayPage;
@@ -24,32 +24,82 @@ pub struct MusicListPage {
 
 struct MusicListInner {
     music_sources: HashMap<String, PathBuf>,
-    selected_item_id: Option<String>,
+    /// 共享选中状态，每个 MusicListItem 持有 clone 用于 draw_self 判断
+    selected_item_id: Arc<Mutex<Option<String>>>,
     selected_level: Option<i32>,
     level_btn_names: Vec<String>,
+    /// 缓存当前选中音乐的难度列表，用于重建按钮
+    cached_levels: Vec<(String, i32)>,
+    /// dispatch_event 后处理：待处理的选中 item_id
+    pending_select: Option<String>,
+    /// dispatch_event 后处理：待处理的难度选择
+    pending_level_action: Option<i32>,
 }
 
-struct SimpleComp {
+/// 音乐列表项 —— 支持悬停/选中视觉变化
+struct MusicListItem {
     base: ComponentBase,
+    name: String,
+    author: String,
+    /// 共享的选中 item_id，draw_self 时读取
+    selected_item_id: Arc<Mutex<Option<String>>>,
 }
-impl ComponentTrait for SimpleComp {
-    fn base(&self) -> &ComponentBase {
-        &self.base
-    }
-    fn base_mut(&mut self) -> &mut ComponentBase {
-        &mut self.base
+
+impl MusicListItem {
+    fn new(
+        x: i32, y: i32, width: i32, height: i32,
+        item_id: String,
+        name: String,
+        author: String,
+        selected_item_id: Arc<Mutex<Option<String>>>,
+    ) -> Box<Self> {
+        let mut base = ComponentBase::new(x, y, width, height);
+        base.item_id = Some(item_id);
+        Box::new(MusicListItem { base, name, author, selected_item_id })
     }
 }
+
+impl ComponentTrait for MusicListItem {
+    fn base(&self) -> &ComponentBase { &self.base }
+    fn base_mut(&mut self) -> &mut ComponentBase { &mut self.base }
+
+    fn draw_self(&self, renderer: &mut UIRenderer, dx: i32, dy: i32) {
+        let is_selected = self.selected_item_id.lock().unwrap().as_deref()
+            == self.base.item_id.as_deref();
+
+        let (name_size, name_color, author_color): (u32, (u8, u8, u8), (u8, u8, u8)) =
+            if is_selected {
+                // Python: selected → name 22px yellow, author 220,220,220
+                (22, (255, 255, 100), (220, 220, 220))
+            } else if self.base.hovered {
+                // Python: hovered → name 22px 255,255,160, author 200,200,200
+                (22, (255, 255, 160), (200, 200, 200))
+            } else {
+                // Python: normal → name 20px 255,255,255, author 160,160,160
+                (20, (255, 255, 255), (160, 160, 160))
+            };
+
+        // Name label: y=4, height=24
+        renderer.draw_text(&self.name, dx, dy + 4, self.base.width, 24, name_size, name_color);
+        // Author label: y=28, height=20
+        renderer.draw_text(&self.author, dx, dy + 28, self.base.width, 20, 14, author_color);
+    }
+}
+
 
 impl MusicListPage {
     pub fn new() -> Self {
+        let selected_item_id = Arc::new(Mutex::new(None));
         MusicListPage {
             page: Page::new(),
             inner: Arc::new(Mutex::new(MusicListInner {
                 music_sources: HashMap::new(),
-                selected_item_id: None,
+                selected_item_id: selected_item_id.clone(),
                 selected_level: None,
                 level_btn_names: Vec::new(),
+                cached_levels: Vec::new(),
+                pending_select: None,
+                pending_level_action: None,
             })),
         }
     }
@@ -99,17 +149,14 @@ impl AnyPage for MusicListPage {
         scroll.base.v_constraint = Constraintable::Maximum;
         scroll.base.h_constraint = Constraintable::Minimum;
         scroll.base.min_width = 280;
-        let self_ptr: *mut MusicListPage = self;
-        let handler: Box<dyn FnMut(&str) + Send> = unsafe {
-            let b: Box<dyn FnMut(&str)> = Box::new(move |item_id: &str| {
-                let this = &mut *self_ptr;
-                this.on_music_select(item_id);
+        let inner_select = self.inner.clone();
+        let handler: Box<dyn FnMut(&str) + Send> =
+            Box::new(move |item_id: &str| {
+                inner_select.lock().unwrap().pending_select = Some(item_id.to_string());
             });
-            Box::from_raw(std::mem::transmute(Box::into_raw(b)))
-        };
         scroll.bind_on_select(handler);
         left.children.push(scroll);
-        content.children.push(Box::new(SimpleComp { base: left }));
+        content.children.push(Box::new(left));
 
         let mut sep = Spacer::new(2, 0);
         sep.base.h_constraint = Constraintable::Minimum;
@@ -146,24 +193,11 @@ impl AnyPage for MusicListPage {
         diff_row.h_constraint = Constraintable::Minimum;
         diff_row.min_height = 44;
         diff_row.name = Some("diff_row".into());
-
-        let diffs = ["EZ", "NM", "HD", "IN"];
-        for &d in &diffs {
-            let mut db = Button::new(d, 0, 0, 60, 36, 18);
-            db.base.v_constraint = Constraintable::Minimum;
-            db.base.h_constraint = Constraintable::Minimum;
-            db.base.min_width = 60;
-            db.base.min_height = 36;
-            diff_row.children.push(db);
-            let mut s = Spacer::new(4, 0);
-            s.base.h_constraint = Constraintable::Minimum;
-            s.base.min_width = 4;
-            diff_row.children.push(s);
-        }
+        // Python: diff_row 初始为空，难度按钮在 _on_music_select 中动态创建
 
         detail
             .children
-            .push(Box::new(SimpleComp { base: diff_row }));
+            .push(Box::new(diff_row));
 
         let mut g2 = Spacer::new(0, 8);
         g2.base.v_constraint = Constraintable::Minimum;
@@ -190,7 +224,7 @@ impl AnyPage for MusicListPage {
         let mut sb = Spacer::new(0, 0);
         sb.base.v_constraint = Constraintable::Maximum;
         detail.children.push(sb);
-        content.children.push(Box::new(SimpleComp { base: detail }));
+        content.children.push(Box::new(detail));
 
         let mut sl = Spacer::new(0, 0);
         sl.base.name = Some("spacer_left".into());
@@ -200,7 +234,7 @@ impl AnyPage for MusicListPage {
         self.page
             .root
             .children
-            .push(Box::new(SimpleComp { base: content }));
+            .push(Box::new(content));
         let mut sr = Spacer::new(0, 0);
         sr.base.name = Some("spacer_right".into());
         sr.base.h_constraint = Constraintable::Maximum;
@@ -243,6 +277,29 @@ impl AnyPage for MusicListPage {
             cover.min_height = cover_min_h;
         }
     }
+
+    fn dispatch_event(&mut self, event: &winit::event::WindowEvent) {
+        // 先分发事件到组件树（按钮回调在其中同步执行）
+        self.page.dispatch_event(event);
+
+        // 后处理：检查是否有待处理的选中/难度切换
+        let pending_select = {
+            let mut inner = self.inner.lock().unwrap();
+            inner.pending_select.take()
+        };
+        if let Some(item_id) = pending_select {
+            self.on_music_select(&item_id);
+        }
+
+        let pending_level = {
+            let mut inner = self.inner.lock().unwrap();
+            inner.pending_level_action.take()
+        };
+        if let Some(level) = pending_level {
+            self.inner.lock().unwrap().selected_level = Some(level);
+            self.rebuild_level_buttons();
+        }
+    }
 }
 
 impl MusicListPage {
@@ -276,15 +333,17 @@ impl MusicListPage {
                     .music_sources
                     .insert(item_id.clone(), base.join(subdir));
 
-                let mut comp = ComponentBase::new(0, 0, 280, 52);
-                comp.item_id = Some(item_id);
-
-                let name_lbl = Label::new(name, 0, 4, 280, 24, 20, (255, 255, 255));
-                comp.children.push(name_lbl);
-                let author_lbl = Label::new(author, 0, 28, 280, 20, 14, (160, 160, 160));
-                comp.children.push(author_lbl);
-
-                comps.push(Box::new(SimpleComp { base: comp }));
+                let selected_id = {
+                    self.inner.lock().unwrap().selected_item_id.clone()
+                };
+                let item = MusicListItem::new(
+                    0, 0, 280, 52,
+                    item_id,
+                    name.to_string(),
+                    author.to_string(),
+                    selected_id,
+                );
+                comps.push(item);
             }
         }
         if let Some(scroll) = self.page.root.find_component_by_name_mut("scroll_list") {
@@ -318,26 +377,7 @@ impl MusicListPage {
             None => return,
         };
 
-        self.inner.lock().unwrap().selected_item_id = Some(item_id.to_string());
-
-        let cover_name = meta
-            .get("music")
-            .and_then(|v| v.get("cover"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        if !cover_name.is_empty() {
-            let path_str = src.join(&cover_name).to_string_lossy().to_string();
-            if let Some(comp) = self.page.root.find_component_by_name_mut("cover") {
-                comp.set_image_path(&path_str);
-            }
-        }
-
-        if let Some(diff_row) = self.page.root.find_by_name_mut("diff_row") {
-            diff_row.children.clear();
-        }
-        self.inner.lock().unwrap().level_btn_names.clear();
-
+        // Cache levels data for later button rebuilds
         let levels_data: Vec<(String, i32)> = meta
             .get("music")
             .and_then(|v| v.get("levels"))
@@ -352,6 +392,42 @@ impl MusicListPage {
             })
             .unwrap_or_default();
 
+        {
+            let mut inner = self.inner.lock().unwrap();
+            *inner.selected_item_id.lock().unwrap() = Some(item_id.to_string());
+            inner.selected_level = None;
+            inner.cached_levels = levels_data;
+        }
+
+        // Update cover image
+        let cover_name = meta
+            .get("music")
+            .and_then(|v| v.get("cover"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if !cover_name.is_empty() {
+            let path_str = src.join(&cover_name).to_string_lossy().to_string();
+            if let Some(comp) = self.page.root.find_component_by_name_mut("cover") {
+                comp.set_image_path(&path_str);
+            }
+        }
+
+        self.rebuild_level_buttons();
+    }
+
+    /// 根据 cached_levels 和 selected_level 重建难度按钮
+    fn rebuild_level_buttons(&mut self) {
+        let (levels_data, selected_level) = {
+            let inner = self.inner.lock().unwrap();
+            (inner.cached_levels.clone(), inner.selected_level)
+        };
+
+        if let Some(diff_row) = self.page.root.find_by_name_mut("diff_row") {
+            diff_row.children.clear();
+        }
+        self.inner.lock().unwrap().level_btn_names.clear();
+
         for (i, (lv_str, lv_num)) in levels_data.iter().enumerate() {
             let btn_name = format!("lv_btn_{}", lv_str);
             let mut btn = Button::new(&format!("Lv.{}", lv_str), 0, 0, 80, 36, 16);
@@ -360,13 +436,20 @@ impl MusicListPage {
             btn.base.v_constraint = Constraintable::Minimum;
             btn.base.min_height = 36;
             btn.base.min_width = 70;
+
+            // Set initial enable/disable state
+            if selected_level == Some(*lv_num) {
+                btn.disable();
+            }
+
+            // Click handler: just set pending flag, dispatch_event will handle the rebuild
             let inner = self.inner.clone();
             let level = *lv_num;
             btn.base.bind_mouse_click(Box::new(move |_| {
-                let mut inner = inner.lock().unwrap();
-                inner.selected_level = Some(level);
+                inner.lock().unwrap().pending_level_action = Some(level);
                 false
             }));
+
             self.inner.lock().unwrap().level_btn_names.push(btn_name);
             if let Some(diff_row) = self.page.root.find_by_name_mut("diff_row") {
                 diff_row.children.push(btn);

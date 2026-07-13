@@ -54,6 +54,7 @@ impl AnyPage for GameplayPage {
 
         let nav = self.page.nav.clone().unwrap();
         let mut btn = ImageButton::new("assets/ui/menu_button.svg", "", 16, 16, 44, 44, 18);
+        btn.base.name = Some("menu_btn".into());
         btn.base.h_constraint = Constraintable::None;
         btn.base.v_constraint = Constraintable::None;
         let n = nav.clone();
@@ -74,8 +75,9 @@ impl AnyPage for GameplayPage {
             if key_event.state == ElementState::Pressed
                 && key_event.physical_key == PhysicalKey::Code(KeyCode::Escape)
             {
-                if let Some(ref nav) = self.page.nav {
-                    let _ = nav.send(NavAction::Push(Box::new(MenuPage::new())));
+                // 模拟菜单按钮鼠标点击（对齐 Python: 创建 dummy event 并 emit 到按钮）
+                if let Some(btn) = self.page.root.find_by_name_mut("menu_btn") {
+                    btn.emit("mouse_click", None);
                 }
                 return;
             }

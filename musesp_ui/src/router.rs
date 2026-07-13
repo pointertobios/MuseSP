@@ -77,13 +77,13 @@ impl Page {
 
     pub fn draw(&self, renderer: &mut UIRenderer) {
         for child in &self.root.children {
-            child.draw(renderer, 0, 0);
+            child.draw(renderer, self.root.x, self.root.y);
         }
     }
 
     pub fn draw_debug(&self, renderer: &mut UIRenderer, config: &Config) {
         for child in &self.root.children {
-            child.draw_debug(renderer, config, 0, 0);
+            child.draw_debug(renderer, config, self.root.x, self.root.y);
         }
     }
 }

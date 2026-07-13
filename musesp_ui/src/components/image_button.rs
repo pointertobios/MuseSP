@@ -42,12 +42,16 @@ impl ImageButton {
 
         if !text.is_empty() {
             let mut label = Label::new(text, 0, 0, 0, 0, font_size, (220, 220, 220));
+            // 估算文本像素宽度：CJK 字符 ≈ font_size，ASCII ≈ font_size * 0.55
+            let tw = estimate_text_width(text, font_size);
             if base.layout_direction == Direction::Horizontal {
                 label.base.h_constraint = Constraintable::Minimum;
                 label.base.v_constraint = Constraintable::None;
+                label.base.min_width = tw + 8;
             } else {
                 label.base.v_constraint = Constraintable::Minimum;
                 label.base.h_constraint = Constraintable::None;
+                label.base.min_height = (font_size as i32) + 4;
             }
             base.children.push(label);
         }
@@ -81,6 +85,24 @@ impl ImageButton {
     pub fn bind_disable(&mut self, handler: EventHandler) {
         self.base.bind_event("disable", handler);
     }
+}
+
+/// 估算文本的像素宽度：CJK 字符 ≈ font_size，ASCII/数字 ≈ font_size * 0.55。
+fn estimate_text_width(text: &str, font_size: u32) -> i32 {
+    let fs = font_size as f32;
+    text.chars()
+        .map(|c| {
+            if ('\u{4E00}'..='\u{9FFF}').contains(&c)
+                || ('\u{3000}'..='\u{303F}').contains(&c)
+                || ('\u{FF00}'..='\u{FFEF}').contains(&c)
+            {
+                fs
+            } else {
+                fs * 0.55
+            }
+        })
+        .sum::<f32>()
+        .ceil() as i32
 }
 
 impl ComponentTrait for ImageButton {

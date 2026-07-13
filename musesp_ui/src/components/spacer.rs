@@ -28,11 +28,11 @@ impl ComponentTrait for Spacer {
 
     fn dispatch_event(&mut self, event: &WindowEvent) -> bool {
         match event {
-            WindowEvent::CursorMoved { position, .. } => {
+            WindowEvent::CursorMoved { device_id, position } => {
                 let (lx, ly) = self.base.local_pos(position.x, position.y);
                 let local_pos = winit::dpi::PhysicalPosition::new(lx as f64, ly as f64);
                 let local_event = WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: *device_id,
                     position: local_pos,
                 };
                 for child in &mut self.base.children {

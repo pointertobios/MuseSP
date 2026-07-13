@@ -15,6 +15,7 @@ use musesp_config::config::Config;
 
 const SHADER_WGSL: &str = include_str!("rect.wgsl");
 const GAME_SHADER_WGSL: &str = include_str!("game.wgsl");
+const TEXTURE_SHADER_WGSL: &str = include_str!("texture.wgsl");
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -91,6 +92,8 @@ struct WgpuState {
     config: wgpu::SurfaceConfiguration,
     pipeline: wgpu::RenderPipeline,
     pipeline_3d: wgpu::RenderPipeline,
+    pipeline_texture: wgpu::RenderPipeline,
+    texture_bind_group_layout: wgpu::BindGroupLayout,
     #[allow(dead_code)]
     camera_bind_group_layout: wgpu::BindGroupLayout,
     camera_buffer: wgpu::Buffer,
@@ -264,6 +267,79 @@ impl WgpuState {
             }],
         });
 
+        // Texture pipeline for image rendering
+        let texture_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: None,
+            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(TEXTURE_SHADER_WGSL)),
+        });
+        let texture_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: None,
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+        let texture_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: None,
+                bind_group_layouts: &[Some(&texture_bind_group_layout)],
+                ..Default::default()
+            });
+        let pipeline_texture =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: None,
+                layout: Some(&texture_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &texture_shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[Some(wgpu::VertexBufferLayout {
+                        array_stride: 16,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2],
+                    })],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &texture_shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: config.format,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: Some(false),
+                    depth_compare: Some(wgpu::CompareFunction::Always),
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            });
+
         WgpuState {
             surface,
             device,
@@ -271,6 +347,8 @@ impl WgpuState {
             config,
             pipeline,
             pipeline_3d,
+            pipeline_texture,
+            texture_bind_group_layout,
             camera_bind_group_layout,
             camera_buffer,
             camera_bind_group,
@@ -499,6 +577,9 @@ impl Application {
             let w = wgpu.config.width as f32;
             let h = wgpu.config.height as f32;
             for rect in &self.renderer.rects {
+                if let Some(clip) = rect.clip_rect {
+                    rp.set_scissor_rect(clip.0, clip.1, clip.2, clip.3);
+                }
                 let vertices = rect_vertices(
                     rect.x as f32,
                     rect.y as f32,
@@ -517,12 +598,18 @@ impl Application {
                     });
                 rp.set_vertex_buffer(0, buf.slice(..));
                 rp.draw(0..6, 0..1);
+                if rect.clip_rect.is_some() {
+                    rp.set_scissor_rect(0, 0, wgpu.config.width, wgpu.config.height);
+                }
             }
 
             // 3D objects
             rp.set_pipeline(&wgpu.pipeline_3d);
             rp.set_bind_group(0, &wgpu.camera_bind_group, &[]);
             for d3d in &self.renderer.draw_3ds {
+                if let Some(clip) = d3d.clip_rect {
+                    rp.set_scissor_rect(clip.0, clip.1, clip.2, clip.3);
+                }
                 let vbo_data = bytemuck::cast_slice(&d3d.vbo);
                 let vbuf = wgpu
                     .device
@@ -542,29 +629,81 @@ impl Application {
                 rp.set_vertex_buffer(0, vbuf.slice(..));
                 rp.set_index_buffer(ibuf.slice(..), wgpu::IndexFormat::Uint32);
                 rp.draw_indexed(0..d3d.ibo.len() as u32, 0, 0..1);
+                if d3d.clip_rect.is_some() {
+                    rp.set_scissor_rect(0, 0, wgpu.config.width, wgpu.config.height);
+                }
             }
 
-            // Images (placeholder)
-            rp.set_pipeline(&wgpu.pipeline);
+            // Images (textured quads)
+            rp.set_pipeline(&wgpu.pipeline_texture);
             for img in &self.renderer.images {
-                let vertices = rect_vertices(
-                    img.x as f32,
-                    img.y as f32,
-                    img.w as f32,
-                    img.h as f32,
-                    w,
-                    h,
-                    (128, 0, 128, 255),
+                if let Some(clip) = img.clip_rect {
+                    rp.set_scissor_rect(clip.0, clip.1, clip.2, clip.3);
+                }
+                let tex_size = wgpu::Extent3d {
+                    width: img.data.width,
+                    height: img.data.height,
+                    depth_or_array_layers: 1,
+                };
+                let texture = wgpu.device.create_texture(&wgpu::TextureDescriptor {
+                    label: None,
+                    size: tex_size,
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                    view_formats: &[],
+                });
+                wgpu.queue.write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    &img.data.rgba,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(4 * img.data.width),
+                        rows_per_image: Some(img.data.height),
+                    },
+                    tex_size,
                 );
-                let buf = wgpu
-                    .device
-                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: None,
-                        contents: bytemuck::cast_slice(&vertices),
-                        usage: wgpu::BufferUsages::VERTEX,
-                    });
+                let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                let sampler = wgpu.device.create_sampler(&wgpu::SamplerDescriptor {
+                    address_mode_u: wgpu::AddressMode::ClampToEdge,
+                    address_mode_v: wgpu::AddressMode::ClampToEdge,
+                    address_mode_w: wgpu::AddressMode::ClampToEdge,
+                    mag_filter: wgpu::FilterMode::Linear,
+                    min_filter: wgpu::FilterMode::Linear,
+                    ..Default::default()
+                });
+                let bind_group = wgpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: None,
+                    layout: &wgpu.texture_bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
+                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
+                    ],
+                });
+                rp.set_bind_group(0, &bind_group, &[]);
+
+                let vertices = texture_vertices(
+                    img.x as f32, img.y as f32,
+                    img.w as f32, img.h as f32,
+                    w, h,
+                );
+                let buf = wgpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: None,
+                    contents: bytemuck::cast_slice(&vertices),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
                 rp.set_vertex_buffer(0, buf.slice(..));
                 rp.draw(0..6, 0..1);
+                if img.clip_rect.is_some() {
+                    rp.set_scissor_rect(0, 0, wgpu.config.width, wgpu.config.height);
+                }
             }
 
             if let Err(e) = text_renderer.render(atlas, &viewport, &mut rp) {
@@ -601,6 +740,25 @@ fn rect_vertices(
         [x1, y1, r, g, b, a],
         [x2, y2, r, g, b, a],
         [x1, y2, r, g, b, a],
+    ]
+}
+
+fn texture_vertices(
+    x: f32, y: f32, w: f32, h: f32,
+    screen_w: f32, screen_h: f32,
+) -> [[f32; 4]; 6] {
+    let x1 = x / screen_w * 2.0 - 1.0;
+    let y1 = 1.0 - y / screen_h * 2.0;
+    let x2 = (x + w) / screen_w * 2.0 - 1.0;
+    let y2 = 1.0 - (y + h) / screen_h * 2.0;
+    // pos(x,y), uv(u,v): TL(0,0) TR(1,0) BR(1,1) BL(0,1)
+    [
+        [x1, y1, 0.0, 0.0],
+        [x2, y1, 1.0, 0.0],
+        [x2, y2, 1.0, 1.0],
+        [x1, y1, 0.0, 0.0],
+        [x2, y2, 1.0, 1.0],
+        [x1, y2, 0.0, 1.0],
     ]
 }
 

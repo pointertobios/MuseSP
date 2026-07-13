@@ -1,5 +1,5 @@
 use musesp_ui::components::button::Button;
-use musesp_ui::components::core::{ComponentBase, ComponentTrait, Constraintable, Direction};
+use musesp_ui::components::core::{ComponentBase, Constraintable, Direction};
 use musesp_ui::components::label::Label;
 use musesp_ui::components::spacer::Spacer;
 use musesp_ui::router::{AnyPage, NavAction, Page};
@@ -17,17 +17,6 @@ impl HomePage {
     }
 }
 
-struct SimpleComp {
-    base: ComponentBase,
-}
-impl ComponentTrait for SimpleComp {
-    fn base(&self) -> &ComponentBase {
-        &self.base
-    }
-    fn base_mut(&mut self) -> &mut ComponentBase {
-        &mut self.base
-    }
-}
 
 impl AnyPage for HomePage {
     fn page(&self) -> &Page {
@@ -73,6 +62,7 @@ impl AnyPage for HomePage {
         btn_start.base.min_width = 200;
         let n = nav.clone();
         btn_start.base.bind_mouse_click(Box::new(move |_| {
+            println!("[click] 开始");
             let _ = n.send(NavAction::Push(Box::new(MusicListPage::new())));
             false
         }));
@@ -114,7 +104,7 @@ impl AnyPage for HomePage {
         self.page
             .root
             .children
-            .push(Box::new(SimpleComp { base: content }));
+            .push(Box::new(content));
         let mut spacer_right = Spacer::new(0, 0);
         spacer_right.base.h_constraint = Constraintable::Maximum;
         spacer_right.base.v_constraint = Constraintable::Minimum;

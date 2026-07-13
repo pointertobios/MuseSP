@@ -1,7 +1,7 @@
 use winit::event::{ElementState, WindowEvent};
 
 use musesp_config::config::Config;
-use musesp_ui::components::core::{ComponentBase, ComponentTrait, Constraintable, Direction};
+use musesp_ui::components::core::{ComponentBase, Constraintable, Direction};
 use musesp_ui::components::image_button::ImageButton;
 use musesp_ui::components::spacer::Spacer;
 use musesp_ui::renderer::UIRenderer;
@@ -17,17 +17,6 @@ pub struct MenuPage {
     menu_h: i32,
 }
 
-struct SimpleComp {
-    base: ComponentBase,
-}
-impl ComponentTrait for SimpleComp {
-    fn base(&self) -> &ComponentBase {
-        &self.base
-    }
-    fn base_mut(&mut self) -> &mut ComponentBase {
-        &mut self.base
-    }
-}
 
 impl MenuPage {
     pub fn new() -> Self {
@@ -86,6 +75,9 @@ impl AnyPage for MenuPage {
             btn.base.v_constraint = Constraintable::Minimum;
             btn.base.min_width = 120;
             btn.base.min_height = 36;
+            if *label == "取消" {
+                btn.base.name = Some("cancel_btn".into());
+            }
 
             let n = nav.clone();
             let lbl = *label;
@@ -107,7 +99,7 @@ impl AnyPage for MenuPage {
         self.page
             .root
             .children
-            .push(Box::new(SimpleComp { base: row }));
+            .push(Box::new(row));
 
         let mut bot = Spacer::new(0, 0);
         bot.base.v_constraint = Constraintable::Maximum;
@@ -156,8 +148,9 @@ impl AnyPage for MenuPage {
             if key_event.state == ElementState::Pressed
                 && key_event.physical_key == PhysicalKey::Code(KeyCode::Escape)
             {
-                if let Some(ref nav) = self.page.nav {
-                    let _ = nav.send(NavAction::Pop);
+                // Python: 创建 dummy MOUSEBUTTONUP event，emit 到 cancel_btn 的 mouse_click
+                if let Some(btn) = self.page.root.find_by_name_mut("cancel_btn") {
+                    btn.emit("mouse_click", None);
                 }
                 return;
             }
