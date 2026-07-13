@@ -1,3 +1,4 @@
 /target
 /.vscode
-assets/builtin_musics
+assets/builtin_musics/*
+!assets/builtin_musics/keep
