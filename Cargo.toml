@@ -1,0 +1,8 @@
+[workspace]
+members = [
+    "musesp_config",
+    "musesp_ui",
+    "musesp",
+    "musesp_editor",
+]
+resolver = "3"

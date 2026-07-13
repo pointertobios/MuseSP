@@ -2,5 +2,5 @@
 music_assets_path = ["assets/builtin_musics"]
 
 [debug.ui]
-component_border = false
+component_border = true
 render_profile = true

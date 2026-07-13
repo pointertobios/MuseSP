@@ -1,0 +1,395 @@
+﻿use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use musesp_ui::components::button::Button;
+use musesp_ui::components::core::{ComponentBase, ComponentTrait, Constraintable, Direction};
+use musesp_ui::components::image::{Image, ImageMode};
+use musesp_ui::components::image_button::ImageButton;
+use musesp_ui::components::label::Label;
+use musesp_ui::components::scroll_list::ScrollList;
+use musesp_ui::components::spacer::Spacer;
+use musesp_ui::router::{AnyPage, NavAction, Page};
+
+use crate::gameplay_page::GameplayPage;
+use crate::pages::home::HomePage;
+
+use std::sync::Mutex;
+
+pub struct MusicListPage {
+    pub page: Page,
+    inner: Arc<Mutex<MusicListInner>>,
+}
+
+struct MusicListInner {
+    music_sources: HashMap<String, PathBuf>,
+    selected_item_id: Option<String>,
+    selected_level: Option<i32>,
+    level_btn_names: Vec<String>,
+}
+
+struct SimpleComp {
+    base: ComponentBase,
+}
+impl ComponentTrait for SimpleComp {
+    fn base(&self) -> &ComponentBase {
+        &self.base
+    }
+    fn base_mut(&mut self) -> &mut ComponentBase {
+        &mut self.base
+    }
+}
+
+impl MusicListPage {
+    pub fn new() -> Self {
+        MusicListPage {
+            page: Page::new(),
+            inner: Arc::new(Mutex::new(MusicListInner {
+                music_sources: HashMap::new(),
+                selected_item_id: None,
+                selected_level: None,
+                level_btn_names: Vec::new(),
+            })),
+        }
+    }
+}
+
+impl AnyPage for MusicListPage {
+    fn page(&self) -> &Page {
+        &self.page
+    }
+    fn page_mut(&mut self) -> &mut Page {
+        &mut self.page
+    }
+    fn full_shadow_promise(&self) -> bool {
+        true
+    }
+
+    fn on_activate(&mut self) {}
+
+    fn build(&mut self) {
+        self.page.root.layout_direction = Direction::Horizontal;
+
+        let nav = self.page.nav.clone().unwrap();
+
+        let mut back_btn = ImageButton::new("assets/ui/return_button.svg", "", 16, 16, 44, 44, 18);
+        back_btn.base.h_constraint = Constraintable::None;
+        back_btn.base.v_constraint = Constraintable::None;
+        let n = nav.clone();
+        back_btn.base.bind_mouse_click(Box::new(move |_| {
+            let _ = n.send(NavAction::PopThenElse(Box::new(HomePage::new())));
+            false
+        }));
+        self.page.root.children.push(back_btn);
+
+        let mut content = ComponentBase::new(0, 0, 0, 0);
+        content.layout_direction = Direction::Horizontal;
+        content.h_constraint = Constraintable::Maximum;
+        content.v_constraint = Constraintable::Minimum;
+
+        let mut left = ComponentBase::new(0, 0, 320, 0);
+        left.layout_direction = Direction::Vertical;
+        left.h_constraint = Constraintable::Minimum;
+        left.v_constraint = Constraintable::Minimum;
+        left.min_width = 320;
+
+        let mut scroll = ScrollList::new(0, 0, 280, 0, 52);
+        scroll.base.name = Some("scroll_list".into());
+        scroll.base.v_constraint = Constraintable::Maximum;
+        scroll.base.h_constraint = Constraintable::Minimum;
+        scroll.base.min_width = 280;
+        let self_ptr: *mut MusicListPage = self;
+        let handler: Box<dyn FnMut(&str) + Send> = unsafe {
+            let b: Box<dyn FnMut(&str)> = Box::new(move |item_id: &str| {
+                let this = &mut *self_ptr;
+                this.on_music_select(item_id);
+            });
+            Box::from_raw(std::mem::transmute(Box::into_raw(b)))
+        };
+        scroll.bind_on_select(handler);
+        left.children.push(scroll);
+        content.children.push(Box::new(SimpleComp { base: left }));
+
+        let mut sep = Spacer::new(2, 0);
+        sep.base.h_constraint = Constraintable::Minimum;
+        sep.base.v_constraint = Constraintable::Minimum;
+        sep.base.min_width = 2;
+        content.children.push(sep);
+
+        let mut detail = ComponentBase::new(0, 0, 0, 0);
+        detail.layout_direction = Direction::Vertical;
+        detail.h_constraint = Constraintable::Maximum;
+        detail.v_constraint = Constraintable::Minimum;
+        detail.name = Some("detail".into());
+
+        let mut st = Spacer::new(0, 0);
+        st.base.name = Some("spacer_top".into());
+        st.base.v_constraint = Constraintable::Maximum;
+        detail.children.push(st);
+
+        let mut cover = Image::new("", 0, 0, 200, 0, ImageMode::KeepRate, ImageMode::Cover);
+        cover.base.name = Some("cover".into());
+        cover.base.v_constraint = Constraintable::Minimum;
+        cover.base.h_constraint = Constraintable::Minimum;
+        cover.base.min_width = 200;
+        detail.children.push(cover);
+
+        let mut g1 = Spacer::new(0, 8);
+        g1.base.v_constraint = Constraintable::Minimum;
+        g1.base.min_height = 8;
+        detail.children.push(g1);
+
+        let mut diff_row = ComponentBase::new(0, 0, 0, 44);
+        diff_row.layout_direction = Direction::Horizontal;
+        diff_row.v_constraint = Constraintable::Minimum;
+        diff_row.h_constraint = Constraintable::Minimum;
+        diff_row.min_height = 44;
+        diff_row.name = Some("diff_row".into());
+
+        let diffs = ["EZ", "NM", "HD", "IN"];
+        for &d in &diffs {
+            let mut db = Button::new(d, 0, 0, 60, 36, 18);
+            db.base.v_constraint = Constraintable::Minimum;
+            db.base.h_constraint = Constraintable::Minimum;
+            db.base.min_width = 60;
+            db.base.min_height = 36;
+            diff_row.children.push(db);
+            let mut s = Spacer::new(4, 0);
+            s.base.h_constraint = Constraintable::Minimum;
+            s.base.min_width = 4;
+            diff_row.children.push(s);
+        }
+
+        detail
+            .children
+            .push(Box::new(SimpleComp { base: diff_row }));
+
+        let mut g2 = Spacer::new(0, 8);
+        g2.base.v_constraint = Constraintable::Minimum;
+        g2.base.min_height = 8;
+        detail.children.push(g2);
+
+        let mut play = Button::new("\u{25B6} Play", 0, 0, 200, 44, 24);
+        play.base.name = Some("btn_play".into());
+        play.base.v_constraint = Constraintable::Minimum;
+        play.base.h_constraint = Constraintable::Maximum;
+        play.base.min_height = 44;
+        play.base.min_width = 200;
+        let inner = self.inner.clone();
+        let nav = self.page.nav.clone().unwrap();
+        play.base.bind_mouse_click(Box::new(move |_| {
+            if inner.lock().unwrap().selected_level.is_none() {
+                return false;
+            }
+            let _ = nav.send(NavAction::ClearAndPush(Box::new(GameplayPage::new())));
+            false
+        }));
+        detail.children.push(play);
+
+        let mut sb = Spacer::new(0, 0);
+        sb.base.v_constraint = Constraintable::Maximum;
+        detail.children.push(sb);
+        content.children.push(Box::new(SimpleComp { base: detail }));
+
+        let mut sl = Spacer::new(0, 0);
+        sl.base.name = Some("spacer_left".into());
+        sl.base.h_constraint = Constraintable::Maximum;
+        sl.base.v_constraint = Constraintable::Minimum;
+        self.page.root.children.push(sl);
+        self.page
+            .root
+            .children
+            .push(Box::new(SimpleComp { base: content }));
+        let mut sr = Spacer::new(0, 0);
+        sr.base.name = Some("spacer_right".into());
+        sr.base.h_constraint = Constraintable::Maximum;
+        sr.base.v_constraint = Constraintable::Minimum;
+        self.page.root.children.push(sr);
+
+        self.load_list();
+    }
+
+    fn prepare_layout(&mut self) {
+        let cap = self.page.root.width * 2 / 11;
+        if let Some(sl) = self.page.root.find_by_name_mut("spacer_left") {
+            sl.max_width = cap;
+        }
+        if let Some(sr) = self.page.root.find_by_name_mut("spacer_right") {
+            sr.max_width = cap;
+        }
+        let detail_h = self
+            .page
+            .root
+            .find_by_name("detail")
+            .map(|d| d.height)
+            .unwrap_or(0);
+        let diff_row_min_h = self
+            .page
+            .root
+            .find_by_name("diff_row")
+            .map(|d| d.min_height)
+            .unwrap_or(44);
+        let btn_play_min_h = self
+            .page
+            .root
+            .find_by_name("btn_play")
+            .map(|d| d.min_height)
+            .unwrap_or(44);
+        let fixed = 8 + diff_row_min_h + 8 + btn_play_min_h;
+        let available = 0.max(detail_h - fixed);
+        let cover_min_h = 300.max(available * 3 / 2);
+        if let Some(cover) = self.page.root.find_by_name_mut("cover") {
+            cover.min_height = cover_min_h;
+        }
+    }
+}
+
+impl MusicListPage {
+    fn load_list(&mut self) {
+        let config = musesp_config::config::load_config();
+        let mut comps: Vec<Box<dyn ComponentTrait>> = Vec::new();
+        for path_str in &config.gameplay.music_assets_path {
+            let base = PathBuf::from(path_str);
+            let list_file = self.resolve_list_file(&base);
+            let Some(list_file) = list_file else { continue };
+            let content = match fs::read_to_string(&list_file) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            for line in content.lines() {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                let parts: Vec<&str> = line.splitn(3, '|').collect();
+                if parts.len() < 3 {
+                    continue;
+                }
+                let subdir = parts[0];
+                let name = parts[1];
+                let author = parts[2];
+                let item_id = format!("{}/{}", path_str, subdir);
+                self.inner
+                    .lock()
+                    .unwrap()
+                    .music_sources
+                    .insert(item_id.clone(), base.join(subdir));
+
+                let mut comp = ComponentBase::new(0, 0, 280, 52);
+                comp.item_id = Some(item_id);
+
+                let name_lbl = Label::new(name, 0, 4, 280, 24, 20, (255, 255, 255));
+                comp.children.push(name_lbl);
+                let author_lbl = Label::new(author, 0, 28, 280, 20, 14, (160, 160, 160));
+                comp.children.push(author_lbl);
+
+                comps.push(Box::new(SimpleComp { base: comp }));
+            }
+        }
+        if let Some(scroll) = self.page.root.find_component_by_name_mut("scroll_list") {
+            scroll.set_scroll_items(comps);
+        }
+    }
+
+    fn resolve_list_file(&self, base: &PathBuf) -> Option<PathBuf> {
+        if base.is_dir() {
+            let f = base.join("list.txt");
+            if f.exists() {
+                return Some(f);
+            }
+        }
+        None
+    }
+
+    fn on_music_select(&mut self, item_id: &str) {
+        let src = {
+            let inner = self.inner.lock().unwrap();
+            match inner.music_sources.get(item_id) {
+                Some(s) => s.clone(),
+                None => return,
+            }
+        };
+        if !src.is_dir() {
+            return;
+        }
+        let meta = match self.load_meta(&src) {
+            Some(m) => m,
+            None => return,
+        };
+
+        self.inner.lock().unwrap().selected_item_id = Some(item_id.to_string());
+
+        let cover_name = meta
+            .get("music")
+            .and_then(|v| v.get("cover"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if !cover_name.is_empty() {
+            let path_str = src.join(&cover_name).to_string_lossy().to_string();
+            if let Some(comp) = self.page.root.find_component_by_name_mut("cover") {
+                comp.set_image_path(&path_str);
+            }
+        }
+
+        if let Some(diff_row) = self.page.root.find_by_name_mut("diff_row") {
+            diff_row.children.clear();
+        }
+        self.inner.lock().unwrap().level_btn_names.clear();
+
+        let levels_data: Vec<(String, i32)> = meta
+            .get("music")
+            .and_then(|v| v.get("levels"))
+            .and_then(|v| v.as_table())
+            .map(|levels| {
+                let mut pairs: Vec<(String, i32)> = levels
+                    .keys()
+                    .map(|k| (k.clone(), k.parse::<i32>().unwrap_or(0)))
+                    .collect();
+                pairs.sort_by_key(|(_, lv)| *lv);
+                pairs
+            })
+            .unwrap_or_default();
+
+        for (i, (lv_str, lv_num)) in levels_data.iter().enumerate() {
+            let btn_name = format!("lv_btn_{}", lv_str);
+            let mut btn = Button::new(&format!("Lv.{}", lv_str), 0, 0, 80, 36, 16);
+            btn.base.name = Some(btn_name.clone());
+            btn.base.h_constraint = Constraintable::Maximum;
+            btn.base.v_constraint = Constraintable::Minimum;
+            btn.base.min_height = 36;
+            btn.base.min_width = 70;
+            let inner = self.inner.clone();
+            let level = *lv_num;
+            btn.base.bind_mouse_click(Box::new(move |_| {
+                let mut inner = inner.lock().unwrap();
+                inner.selected_level = Some(level);
+                false
+            }));
+            self.inner.lock().unwrap().level_btn_names.push(btn_name);
+            if let Some(diff_row) = self.page.root.find_by_name_mut("diff_row") {
+                diff_row.children.push(btn);
+            }
+            if i < levels_data.len() - 1 {
+                let mut g = Spacer::new(4, 0);
+                g.base.h_constraint = Constraintable::Minimum;
+                g.base.min_width = 4;
+                if let Some(diff_row) = self.page.root.find_by_name_mut("diff_row") {
+                    diff_row.children.push(g);
+                }
+            }
+        }
+
+        self.page.root.layout(None);
+    }
+
+    fn load_meta(&self, src: &PathBuf) -> Option<toml::Table> {
+        let meta_file = src.join("meta.toml");
+        if !meta_file.exists() {
+            return None;
+        }
+        let content = fs::read_to_string(&meta_file).ok()?;
+        toml::from_str(&content).ok()
+    }
+}
