@@ -14,7 +14,6 @@ use crate::router::{AnyPage, PageToken, Router};
 use musesp_config::config::Config;
 
 const SHADER_WGSL: &str = include_str!("rect.wgsl");
-const GAME_SHADER_WGSL: &str = include_str!("game.wgsl");
 const TEXTURE_SHADER_WGSL: &str = include_str!("texture.wgsl");
 
 #[repr(C)]
@@ -91,13 +90,11 @@ struct WgpuState {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     pipeline: wgpu::RenderPipeline,
-    pipeline_3d: wgpu::RenderPipeline,
     pipeline_texture: wgpu::RenderPipeline,
     texture_bind_group_layout: wgpu::BindGroupLayout,
     #[allow(dead_code)]
     camera_bind_group_layout: wgpu::BindGroupLayout,
     camera_buffer: wgpu::Buffer,
-    camera_bind_group: wgpu::BindGroup,
     #[allow(dead_code)]
     depth_texture: wgpu::Texture,
     depth_view: wgpu::TextureView,
@@ -175,10 +172,6 @@ impl WgpuState {
             cache: None,
         });
 
-        let shader_3d = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: None,
-            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(GAME_SHADER_WGSL)),
-        });
         let camera_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: None,
@@ -193,11 +186,6 @@ impl WgpuState {
                     count: None,
                 }],
             });
-        let pipeline_layout_3d = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: None,
-            bind_group_layouts: &[Some(&camera_bind_group_layout)],
-            ..Default::default()
-        });
         let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: None,
             size: wgpu::Extent3d {
@@ -213,58 +201,11 @@ impl WgpuState {
             view_formats: &[],
         });
         let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let pipeline_3d = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: None,
-            layout: Some(&pipeline_layout_3d),
-            vertex: wgpu::VertexState {
-                module: &shader_3d,
-                entry_point: Some("vs_main_3d"),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: 16,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32],
-                })],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader_3d,
-                entry_point: Some("fs_main_3d"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                cull_mode: Some(wgpu::Face::Back),
-                ..Default::default()
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::Less),
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
         let camera_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
             size: std::mem::size_of::<CameraUniformData>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
-        });
-        let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout: &camera_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: camera_buffer.as_entire_binding(),
-            }],
         });
 
         // Texture pipeline for image rendering
@@ -346,12 +287,10 @@ impl WgpuState {
             queue,
             config,
             pipeline,
-            pipeline_3d,
             pipeline_texture,
             texture_bind_group_layout,
             camera_bind_group_layout,
             camera_buffer,
-            camera_bind_group,
             depth_texture,
             depth_view,
             start_time: Instant::now(),
@@ -599,37 +538,6 @@ impl Application {
                 rp.set_vertex_buffer(0, buf.slice(..));
                 rp.draw(0..6, 0..1);
                 if rect.clip_rect.is_some() {
-                    rp.set_scissor_rect(0, 0, wgpu.config.width, wgpu.config.height);
-                }
-            }
-
-            // 3D objects
-            rp.set_pipeline(&wgpu.pipeline_3d);
-            rp.set_bind_group(0, &wgpu.camera_bind_group, &[]);
-            for d3d in &self.renderer.draw_3ds {
-                if let Some(clip) = d3d.clip_rect {
-                    rp.set_scissor_rect(clip.0, clip.1, clip.2, clip.3);
-                }
-                let vbo_data = bytemuck::cast_slice(&d3d.vbo);
-                let vbuf = wgpu
-                    .device
-                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: None,
-                        contents: vbo_data,
-                        usage: wgpu::BufferUsages::VERTEX,
-                    });
-                let ibo_data = bytemuck::cast_slice(&d3d.ibo);
-                let ibuf = wgpu
-                    .device
-                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: None,
-                        contents: ibo_data,
-                        usage: wgpu::BufferUsages::INDEX,
-                    });
-                rp.set_vertex_buffer(0, vbuf.slice(..));
-                rp.set_index_buffer(ibuf.slice(..), wgpu::IndexFormat::Uint32);
-                rp.draw_indexed(0..d3d.ibo.len() as u32, 0, 0..1);
-                if d3d.clip_rect.is_some() {
                     rp.set_scissor_rect(0, 0, wgpu.config.width, wgpu.config.height);
                 }
             }

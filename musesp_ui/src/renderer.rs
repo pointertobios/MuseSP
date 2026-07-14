@@ -4,7 +4,6 @@ pub struct UIRenderer {
     pub rects: Vec<DrawRect>,
     pub texts: Vec<DrawText>,
     pub images: Vec<DrawImage>,
-    pub draw_3ds: Vec<Draw3D>,
     clip_stack: Vec<(i32, i32, i32, i32)>,
 }
 
@@ -40,24 +39,12 @@ pub struct DrawImage {
     pub clip_rect: Option<(u32, u32, u32, u32)>,
 }
 
-#[derive(Debug, Clone)]
-pub struct Draw3D {
-    pub x: i32,
-    pub y: i32,
-    pub w: i32,
-    pub h: i32,
-    pub vbo: Vec<f32>,
-    pub ibo: Vec<u32>,
-    pub clip_rect: Option<(u32, u32, u32, u32)>,
-}
-
 impl UIRenderer {
     pub fn new() -> Self {
         UIRenderer {
             rects: Vec::new(),
             texts: Vec::new(),
             images: Vec::new(),
-            draw_3ds: Vec::new(),
             clip_stack: Vec::new(),
         }
     }
@@ -66,7 +53,6 @@ impl UIRenderer {
         self.rects.clear();
         self.texts.clear();
         self.images.clear();
-        self.draw_3ds.clear();
         self.clip_stack.clear();
     }
 
@@ -124,17 +110,5 @@ impl UIRenderer {
         if let Some(d) = data {
             self.images.push(DrawImage { x, y, w, h, data: d.clone(), clip_rect: self.current_clip() });
         }
-    }
-
-    pub fn draw_3d(&mut self, x: i32, y: i32, w: i32, h: i32, vbo: &[f32], ibo: &[u32]) {
-        self.draw_3ds.push(Draw3D {
-            x,
-            y,
-            w,
-            h,
-            vbo: vbo.to_vec(),
-            ibo: ibo.to_vec(),
-            clip_rect: self.current_clip(),
-        });
     }
 }

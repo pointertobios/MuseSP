@@ -13,19 +13,6 @@ impl GameplayPage {
     pub fn new() -> Self {
         GameplayPage { page: Page::new() }
     }
-
-    fn build_test_cube() -> (Vec<f32>, Vec<u32>) {
-        let s: f32 = 1.0;
-        let vbo = vec![
-            -s, -s, -s, 0.0, s, -s, -s, 0.0, s, s, -s, 0.0, -s, s, -s, 0.0, -s, -s, s, 0.0, s, -s,
-            s, 0.0, s, s, s, 0.0, -s, s, s, 0.0,
-        ];
-        let ibo = vec![
-            0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7, 0, 1, 5, 0, 5, 4, 2, 3, 7, 2, 7, 6, 0, 3, 7, 0, 7,
-            4, 1, 2, 6, 1, 6, 5,
-        ];
-        (vbo, ibo)
-    }
 }
 
 impl AnyPage for GameplayPage {
@@ -46,8 +33,7 @@ impl AnyPage for GameplayPage {
     fn on_activate(&mut self) {}
 
     fn build(&mut self) {
-        let (vbo, ibo) = Self::build_test_cube();
-        let mut canvas = RendererCanvas::new(0, 0, 0, 0, vbo, ibo);
+        let mut canvas = RendererCanvas::new(0, 0, 0, 0);
         canvas.base.h_constraint = Constraintable::Maximum;
         canvas.base.v_constraint = Constraintable::Maximum;
         self.page.root.children.push(canvas);
