@@ -18,6 +18,7 @@ impl HomePage {
 }
 
 
+#[async_trait::async_trait]
 impl AnyPage for HomePage {
     fn page(&self) -> &Page {
         &self.page
@@ -31,7 +32,7 @@ impl AnyPage for HomePage {
 
     fn on_activate(&mut self) {}
 
-    fn build(&mut self) {
+    async fn build(&mut self) {
         self.page.root.layout_direction = Direction::Horizontal;
 
         let mut content = ComponentBase::new(0, 0, 0, 0);
@@ -63,7 +64,7 @@ impl AnyPage for HomePage {
         let n = nav.clone();
         btn_start.base.bind_mouse_click(Box::new(move |_| {
             println!("[click] 开始");
-            let _ = n.send(NavAction::Push(Box::new(MusicListPage::new())));
+            let _ = n.blocking_send(NavAction::Push(Box::new(MusicListPage::new())));
             false
         }));
         content.children.push(btn_start);

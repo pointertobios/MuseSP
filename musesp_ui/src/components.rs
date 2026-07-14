@@ -7,3 +7,6 @@ pub mod image_button;
 pub mod scroll_list;
 pub mod canvas;
 pub mod renderer_canvas;
+
+// 重新导出常用类型
+pub use crate::renderer::{RenderSnapshot, VertexLayoutDesc};

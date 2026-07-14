@@ -1,7 +1,11 @@
 use std::any::Any;
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::Arc;
+
+use async_trait::async_trait;
+
+use tokio::sync::mpsc;
 
 use winit::event::WindowEvent;
 
@@ -49,11 +53,11 @@ impl Page {
             .nav
             .as_ref()
             .unwrap()
-            .send(NavAction::Push(Box::new(page)));
+            .blocking_send(NavAction::Push(Box::new(page)));
     }
 
     pub fn pop_page(&self) {
-        let _ = self.nav.as_ref().unwrap().send(NavAction::Pop);
+        let _ = self.nav.as_ref().unwrap().blocking_send(NavAction::Pop);
     }
 
     pub fn exit(&self) {
@@ -88,11 +92,12 @@ impl Page {
     }
 }
 
+#[async_trait]
 pub trait AnyPage: Any + Send {
     fn page(&self) -> &Page;
     fn page_mut(&mut self) -> &mut Page;
 
-    fn build(&mut self) {}
+    async fn build(&mut self) {}
     fn destroy(&mut self) {}
     fn on_hide(&mut self) {}
     fn on_activate(&mut self) {}
@@ -103,7 +108,7 @@ pub trait AnyPage: Any + Send {
     fn initial_mode(&self) -> RunMode {
         RunMode::Event
     }
-    fn dispatch_event(&mut self, event: &WindowEvent) {
+    async fn dispatch_event(&mut self, event: &WindowEvent) {
         self.page_mut().dispatch_event(event);
     }
     fn draw(&self, renderer: &mut UIRenderer) {
@@ -134,7 +139,7 @@ pub enum NavAction {
 
 impl Router {
     pub fn new(win_w: i32, win_h: i32) -> Self {
-        let (nav_sender, nav_receiver) = mpsc::channel();
+        let (nav_sender, nav_receiver) = mpsc::channel(256);
         Router {
             stack: Vec::new(),
             win_w,
@@ -147,10 +152,10 @@ impl Router {
         }
     }
 
-    pub fn init_page(&mut self, page: &mut Box<dyn AnyPage>) {
+    pub async fn init_page(&mut self, page: &mut Box<dyn AnyPage>) {
         page.page_mut().nav = Some(self.nav_sender.clone());
         page.page_mut().should_exit = Some(self.should_exit.clone());
-        page.build();
+        page.build().await;
         page.page_mut().root.width = self.win_w;
         page.page_mut().root.height = self.win_h;
         page.prepare_layout();
@@ -158,13 +163,13 @@ impl Router {
         self.mode.set(page.initial_mode());
     }
 
-    pub fn push<P: AnyPage + 'static>(&mut self, page: P) {
+    pub async fn push<P: AnyPage + 'static>(&mut self, page: P) {
         if let Some((current, _)) = self.stack.last_mut() {
             current.on_hide();
             current.page_mut().root.force_mouse_exit();
         }
         let mut boxed: Box<dyn AnyPage> = Box::new(page);
-        self.init_page(&mut boxed);
+        self.init_page(&mut boxed).await;
         self.stack.push((boxed, PageToken::new()));
     }
 
@@ -183,7 +188,7 @@ impl Router {
         }
     }
 
-    pub fn clear_and_push<P: AnyPage + 'static>(&mut self, page: P) {
+    pub async fn clear_and_push<P: AnyPage + 'static>(&mut self, page: P) {
         if let Some((current, _)) = self.stack.last_mut() {
             current.on_hide();
             current.page_mut().root.force_mouse_exit();
@@ -192,11 +197,11 @@ impl Router {
             p.destroy();
         }
         let mut boxed: Box<dyn AnyPage> = Box::new(page);
-        self.init_page(&mut boxed);
+        self.init_page(&mut boxed).await;
         self.stack.push((boxed, PageToken::new()));
     }
 
-    pub fn pop_then_else<F: FnOnce() -> Box<dyn AnyPage>>(
+    pub async fn pop_then_else<F: FnOnce() -> Box<dyn AnyPage>>(
         &mut self,
         fallback: F,
         value: Option<Arc<dyn Any + Send + Sync>>,
@@ -214,38 +219,38 @@ impl Router {
         page.destroy();
         self.stack.clear();
         let mut boxed = fallback();
-        self.init_page(&mut boxed);
+        self.init_page(&mut boxed).await;
         self.stack.push((boxed, PageToken::new()));
     }
 
-    pub fn pop_n_and_push<P: AnyPage + 'static>(
+    pub async fn pop_n_and_push<P: AnyPage + 'static>(
         &mut self,
         n: usize,
         page: P,
         value: Option<Arc<dyn Any + Send + Sync>>,
     ) {
         if n == 0 {
-            self.push(page);
+            self.push(page).await;
             return;
         }
         if n >= self.stack.len() {
-            self.clear_and_push(page);
+            self.clear_and_push(page).await;
             return;
         }
         for _ in 0..n {
             self.pop(value.clone());
         }
-        self.push(page);
+        self.push(page).await;
     }
 
-    pub fn dispatch_event(&mut self, event: &WindowEvent) {
+    pub async fn dispatch_event(&mut self, event: &WindowEvent) {
         if let Some((page, _)) = self.stack.last_mut() {
-            page.dispatch_event(event);
+            page.dispatch_event(event).await;
         }
-        self.drain_nav_actions();
+        self.drain_nav_actions().await;
     }
 
-    fn drain_nav_actions(&mut self) {
+    async fn drain_nav_actions(&mut self) {
         while let Ok(action) = self.nav_receiver.try_recv() {
             match action {
                 NavAction::Push(page) => {
@@ -254,7 +259,7 @@ impl Router {
                         current.page_mut().root.force_mouse_exit();
                     }
                     let mut boxed = page;
-                    self.init_page(&mut boxed);
+                    self.init_page(&mut boxed).await;
                     self.stack.push((boxed, PageToken::new()));
                 }
                 NavAction::Pop => {
@@ -269,7 +274,7 @@ impl Router {
                         p.destroy();
                     }
                     let mut boxed = page;
-                    self.init_page(&mut boxed);
+                    self.init_page(&mut boxed).await;
                     self.stack.push((boxed, PageToken::new()));
                 }
                 NavAction::PopThenElse(fallback) => {
@@ -284,7 +289,7 @@ impl Router {
                             p.destroy();
                         }
                         let mut boxed = fallback;
-                        self.init_page(&mut boxed);
+                        self.init_page(&mut boxed).await;
                         self.stack.push((boxed, PageToken::new()));
                     }
                 }

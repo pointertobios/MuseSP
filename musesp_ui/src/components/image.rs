@@ -22,22 +22,22 @@ pub struct Image {
 }
 
 impl Image {
-    pub fn new(path: &str, x: i32, y: i32, width: i32, height: i32, h_mode: ImageMode, v_mode: ImageMode) -> Box<Self> {
-        let image_data = Self::load_image(path);
+    pub async fn new(path: &str, x: i32, y: i32, width: i32, height: i32, h_mode: ImageMode, v_mode: ImageMode) -> Box<Self> {
+        let image_data = Self::load_image(path).await;
         Box::new(Image { base: ComponentBase::new(x, y, width, height), path: path.to_string(), h_mode, v_mode, image_data })
     }
 
-    pub fn set_image(&mut self, path: &str) {
+    pub async fn set_image(&mut self, path: &str) {
         self.path = path.to_string();
-        self.image_data = Self::load_image(path);
+        self.image_data = Self::load_image(path).await;
     }
 
-    fn load_image(path: &str) -> Option<ImageData> {
+    async fn load_image(path: &str) -> Option<ImageData> {
         if path.is_empty() {
             return None;
         }
         if path.ends_with(".svg") {
-            return Self::load_svg(path);
+            return Self::load_svg(path).await;
         }
         let img = image::open(path).ok()?;
         let rgba = img.into_rgba8();
@@ -45,8 +45,8 @@ impl Image {
         Some(ImageData { rgba: rgba.into_raw(), width: w, height: h })
     }
 
-    fn load_svg(path: &str) -> Option<ImageData> {
-        let svg_data = std::fs::read(path).ok()?;
+    async fn load_svg(path: &str) -> Option<ImageData> {
+        let svg_data = tokio::fs::read(path).await.ok()?;
         let opts = usvg::Options::default();
         let tree = usvg::Tree::from_data(&svg_data, &opts).ok()?;
         let size = tree.size();
@@ -129,6 +129,6 @@ impl ComponentTrait for Image {
     }
 
     fn set_image_path(&mut self, path: &str) {
-        self.set_image(path);
+        tokio::runtime::Handle::current().block_on(self.set_image(path));
     }
 }

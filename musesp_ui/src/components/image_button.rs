@@ -14,7 +14,7 @@ pub struct ImageButton {
 }
 
 impl ImageButton {
-    pub fn new(
+    pub async fn new(
         path: &str,
         text: &str,
         x: i32,
@@ -26,7 +26,7 @@ impl ImageButton {
         let mut base = ComponentBase::new(x, y, width, height);
         base.layout_direction = Direction::Horizontal;
 
-        let mut img = Image::new(path, 0, 0, 0, 0, ImageMode::KeepRate, ImageMode::Cover);
+        let mut img = Image::new(path, 0, 0, 0, 0, ImageMode::KeepRate, ImageMode::Cover).await;
         if base.layout_direction == Direction::Horizontal {
             img.base.h_constraint = Constraintable::Maximum;
             img.base.v_constraint = Constraintable::None;

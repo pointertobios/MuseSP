@@ -30,6 +30,7 @@ impl MenuPage {
     }
 }
 
+#[async_trait::async_trait]
 impl AnyPage for MenuPage {
     fn page(&self) -> &Page {
         &self.page
@@ -41,7 +42,7 @@ impl AnyPage for MenuPage {
         false
     }
 
-    fn build(&mut self) {
+    async fn build(&mut self) {
         self.page.root.layout_direction = Direction::Vertical;
 
         let mut top = Spacer::new(0, 0);
@@ -70,7 +71,7 @@ impl AnyPage for MenuPage {
                 s.base.min_width = 8;
                 row.children.push(s);
             }
-            let mut btn = ImageButton::new(path, label, 0, 0, 130, 36, 14);
+            let mut btn = ImageButton::new(path, label, 0, 0, 130, 36, 14).await;
             btn.base.h_constraint = Constraintable::Minimum;
             btn.base.v_constraint = Constraintable::Minimum;
             btn.base.min_width = 120;
@@ -83,8 +84,8 @@ impl AnyPage for MenuPage {
             let lbl = *label;
             btn.base.bind_mouse_click(Box::new(move |_| {
                 match lbl {
-                    "取消" => { let _ = n.send(NavAction::Pop); }
-                    "退出" => { let _ = n.send(NavAction::ClearAndPush(Box::new(MusicListPage::new()))); }
+                    "取消" => { let _ = n.blocking_send(NavAction::Pop); }
+                    "退出" => { let _ = n.blocking_send(NavAction::ClearAndPush(Box::new(MusicListPage::new()))); }
                     _ => {}
                 }
                 false
@@ -137,7 +138,7 @@ impl AnyPage for MenuPage {
         self.page.draw_debug(renderer, config);
     }
 
-    fn dispatch_event(&mut self, event: &WindowEvent) {
+    async fn dispatch_event(&mut self, event: &WindowEvent) {
         use winit::event::WindowEvent;
         use winit::keyboard::{KeyCode, PhysicalKey};
 

@@ -1,7 +1,8 @@
 ﻿use std::collections::HashMap;
-use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
+
+use tokio::sync::Mutex;
 
 use musesp_ui::components::button::Button;
 use musesp_ui::components::core::{ComponentBase, ComponentTrait, Constraintable, Direction};
@@ -14,8 +15,6 @@ use musesp_ui::router::{AnyPage, NavAction, Page};
 
 use crate::gameplay_page::GameplayPage;
 use crate::pages::home::HomePage;
-
-use std::sync::Mutex;
 
 pub struct MusicListPage {
     pub page: Page,
@@ -64,7 +63,7 @@ impl ComponentTrait for MusicListItem {
     fn base_mut(&mut self) -> &mut ComponentBase { &mut self.base }
 
     fn draw_self(&self, renderer: &mut UIRenderer, dx: i32, dy: i32) {
-        let is_selected = self.selected_item_id.lock().unwrap().as_deref()
+        let is_selected = self.selected_item_id.blocking_lock().as_deref()
             == self.base.item_id.as_deref();
 
         let (name_size, name_color, author_color): (u32, (u8, u8, u8), (u8, u8, u8)) =
@@ -105,6 +104,7 @@ impl MusicListPage {
     }
 }
 
+#[async_trait::async_trait]
 impl AnyPage for MusicListPage {
     fn page(&self) -> &Page {
         &self.page
@@ -118,17 +118,17 @@ impl AnyPage for MusicListPage {
 
     fn on_activate(&mut self) {}
 
-    fn build(&mut self) {
+    async fn build(&mut self) {
         self.page.root.layout_direction = Direction::Horizontal;
 
         let nav = self.page.nav.clone().unwrap();
 
-        let mut back_btn = ImageButton::new("assets/ui/return_button.svg", "", 16, 16, 44, 44, 18);
+        let mut back_btn = ImageButton::new("assets/ui/return_button.svg", "", 16, 16, 44, 44, 18).await;
         back_btn.base.h_constraint = Constraintable::None;
         back_btn.base.v_constraint = Constraintable::None;
         let n = nav.clone();
         back_btn.base.bind_mouse_click(Box::new(move |_| {
-            let _ = n.send(NavAction::PopThenElse(Box::new(HomePage::new())));
+            let _ = n.blocking_send(NavAction::PopThenElse(Box::new(HomePage::new())));
             false
         }));
         self.page.root.children.push(back_btn);
@@ -152,7 +152,7 @@ impl AnyPage for MusicListPage {
         let inner_select = self.inner.clone();
         let handler: Box<dyn FnMut(&str) + Send> =
             Box::new(move |item_id: &str| {
-                inner_select.lock().unwrap().pending_select = Some(item_id.to_string());
+                inner_select.blocking_lock().pending_select = Some(item_id.to_string());
             });
         scroll.bind_on_select(handler);
         left.children.push(scroll);
@@ -175,7 +175,7 @@ impl AnyPage for MusicListPage {
         st.base.v_constraint = Constraintable::Maximum;
         detail.children.push(st);
 
-        let mut cover = Image::new("", 0, 0, 200, 0, ImageMode::KeepRate, ImageMode::Cover);
+        let mut cover = Image::new("", 0, 0, 200, 0, ImageMode::KeepRate, ImageMode::Cover).await;
         cover.base.name = Some("cover".into());
         cover.base.v_constraint = Constraintable::Minimum;
         cover.base.h_constraint = Constraintable::Minimum;
@@ -213,10 +213,10 @@ impl AnyPage for MusicListPage {
         let inner = self.inner.clone();
         let nav = self.page.nav.clone().unwrap();
         play.base.bind_mouse_click(Box::new(move |_| {
-            if inner.lock().unwrap().selected_level.is_none() {
+            if inner.blocking_lock().selected_level.is_none() {
                 return false;
             }
-            let _ = nav.send(NavAction::ClearAndPush(Box::new(GameplayPage::new())));
+            let _ = nav.blocking_send(NavAction::ClearAndPush(Box::new(GameplayPage::new())));
             false
         }));
         detail.children.push(play);
@@ -241,7 +241,7 @@ impl AnyPage for MusicListPage {
         sr.base.v_constraint = Constraintable::Minimum;
         self.page.root.children.push(sr);
 
-        self.load_list();
+        self.load_list().await;
     }
 
     fn prepare_layout(&mut self) {
@@ -278,39 +278,39 @@ impl AnyPage for MusicListPage {
         }
     }
 
-    fn dispatch_event(&mut self, event: &winit::event::WindowEvent) {
+    async fn dispatch_event(&mut self, event: &winit::event::WindowEvent) {
         // 先分发事件到组件树（按钮回调在其中同步执行）
         self.page.dispatch_event(event);
 
         // 后处理：检查是否有待处理的选中/难度切换
         let pending_select = {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.inner.blocking_lock();
             inner.pending_select.take()
         };
         if let Some(item_id) = pending_select {
-            self.on_music_select(&item_id);
+            self.on_music_select(&item_id).await;
         }
 
         let pending_level = {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.inner.blocking_lock();
             inner.pending_level_action.take()
         };
         if let Some(level) = pending_level {
-            self.inner.lock().unwrap().selected_level = Some(level);
+            self.inner.blocking_lock().selected_level = Some(level);
             self.rebuild_level_buttons();
         }
     }
 }
 
 impl MusicListPage {
-    fn load_list(&mut self) {
-        let config = musesp_config::config::load_config();
+    async fn load_list(&mut self) {
+        let config = musesp_config::config::load_config().await;
         let mut comps: Vec<Box<dyn ComponentTrait>> = Vec::new();
         for path_str in &config.gameplay.music_assets_path {
             let base = PathBuf::from(path_str);
             let list_file = self.resolve_list_file(&base);
             let Some(list_file) = list_file else { continue };
-            let content = match fs::read_to_string(&list_file) {
+            let content = match tokio::fs::read_to_string(&list_file).await {
                 Ok(c) => c,
                 Err(_) => continue,
             };
@@ -328,13 +328,12 @@ impl MusicListPage {
                 let author = parts[2];
                 let item_id = format!("{}/{}", path_str, subdir);
                 self.inner
-                    .lock()
-                    .unwrap()
+                    .blocking_lock()
                     .music_sources
                     .insert(item_id.clone(), base.join(subdir));
 
                 let selected_id = {
-                    self.inner.lock().unwrap().selected_item_id.clone()
+                    self.inner.blocking_lock().selected_item_id.clone()
                 };
                 let item = MusicListItem::new(
                     0, 0, 280, 52,
@@ -361,9 +360,9 @@ impl MusicListPage {
         None
     }
 
-    fn on_music_select(&mut self, item_id: &str) {
+    async fn on_music_select(&mut self, item_id: &str) {
         let src = {
-            let inner = self.inner.lock().unwrap();
+            let inner = self.inner.blocking_lock();
             match inner.music_sources.get(item_id) {
                 Some(s) => s.clone(),
                 None => return,
@@ -372,7 +371,7 @@ impl MusicListPage {
         if !src.is_dir() {
             return;
         }
-        let meta = match self.load_meta(&src) {
+        let meta = match self.load_meta(&src).await {
             Some(m) => m,
             None => return,
         };
@@ -393,8 +392,8 @@ impl MusicListPage {
             .unwrap_or_default();
 
         {
-            let mut inner = self.inner.lock().unwrap();
-            *inner.selected_item_id.lock().unwrap() = Some(item_id.to_string());
+            let mut inner = self.inner.blocking_lock();
+            *inner.selected_item_id.blocking_lock() = Some(item_id.to_string());
             inner.selected_level = None;
             inner.cached_levels = levels_data;
         }
@@ -419,14 +418,14 @@ impl MusicListPage {
     /// 根据 cached_levels 和 selected_level 重建难度按钮
     fn rebuild_level_buttons(&mut self) {
         let (levels_data, selected_level) = {
-            let inner = self.inner.lock().unwrap();
+            let inner = self.inner.blocking_lock();
             (inner.cached_levels.clone(), inner.selected_level)
         };
 
         if let Some(diff_row) = self.page.root.find_by_name_mut("diff_row") {
             diff_row.children.clear();
         }
-        self.inner.lock().unwrap().level_btn_names.clear();
+        self.inner.blocking_lock().level_btn_names.clear();
 
         for (i, (lv_str, lv_num)) in levels_data.iter().enumerate() {
             let btn_name = format!("lv_btn_{}", lv_str);
@@ -446,11 +445,11 @@ impl MusicListPage {
             let inner = self.inner.clone();
             let level = *lv_num;
             btn.base.bind_mouse_click(Box::new(move |_| {
-                inner.lock().unwrap().pending_level_action = Some(level);
+                inner.blocking_lock().pending_level_action = Some(level);
                 false
             }));
 
-            self.inner.lock().unwrap().level_btn_names.push(btn_name);
+            self.inner.blocking_lock().level_btn_names.push(btn_name);
             if let Some(diff_row) = self.page.root.find_by_name_mut("diff_row") {
                 diff_row.children.push(btn);
             }
@@ -467,12 +466,12 @@ impl MusicListPage {
         self.page.root.layout(None);
     }
 
-    fn load_meta(&self, src: &PathBuf) -> Option<toml::Table> {
+    async fn load_meta(&mut self, src: &PathBuf) -> Option<toml::Table> {
         let meta_file = src.join("meta.toml");
         if !meta_file.exists() {
             return None;
         }
-        let content = fs::read_to_string(&meta_file).ok()?;
+        let content = tokio::fs::read_to_string(&meta_file).await.ok()?;
         toml::from_str(&content).ok()
     }
 }

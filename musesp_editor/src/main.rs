@@ -13,6 +13,7 @@ impl EditorPage {
         EditorPage { page: Page::new() }
     }
 }
+#[async_trait::async_trait]
 impl AnyPage for EditorPage {
     fn page(&self) -> &Page {
         &self.page
@@ -24,7 +25,7 @@ impl AnyPage for EditorPage {
         true
     }
 
-    fn build(&mut self) {
+    async fn build(&mut self) {
         self.page.root.layout_direction = Direction::Vertical;
 
         let mut st = Spacer::new(0, 0);
@@ -50,7 +51,7 @@ impl AnyPage for EditorPage {
         back_btn.base.min_width = 200;
         let nav = self.page.nav.clone().unwrap();
         back_btn.base.bind_mouse_click(Box::new(move |_| {
-            let _ = nav.send(NavAction::Pop);
+            let _ = nav.blocking_send(NavAction::Pop);
             false
         }));
         self.page.root.children.push(back_btn);

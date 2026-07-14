@@ -1,4 +1,3 @@
-use std::fs;
 use std::path::Path;
 
 #[derive(Debug, Clone)]
@@ -49,13 +48,13 @@ fn resolve_config_path() -> String {
     "config.example.toml".to_string()
 }
 
-pub fn load_config() -> Config {
+pub async fn load_config() -> Config {
     let path_str = resolve_config_path();
     let path = Path::new(&path_str);
     if !path.exists() {
         return Config::default();
     }
-    match fs::read_to_string(path) {
+    match tokio::fs::read_to_string(path).await {
         Ok(content) => match toml::from_str::<toml::Table>(&content) {
             Ok(value) => {
                 let gameplay = GameplayConfig {
