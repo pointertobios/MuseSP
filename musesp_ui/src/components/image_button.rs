@@ -3,6 +3,8 @@ use std::sync::Arc;
 
 use winit::event::WindowEvent;
 
+use async_trait::async_trait;
+
 use crate::components::core::{ComponentBase, ComponentTrait, Constraintable, Direction, EventHandler};
 use crate::components::image::{Image, ImageMode};
 use crate::components::label::Label;
@@ -65,7 +67,7 @@ impl ImageButton {
     pub fn enable(&mut self) {
         if !self.enabled.load(Ordering::Relaxed) {
             self.enabled.store(true, Ordering::Relaxed);
-            self.base.emit("enable", None);
+            tokio::runtime::Handle::current().block_on(self.base.emit("enable", None));
         }
     }
 
@@ -74,7 +76,7 @@ impl ImageButton {
             self.enabled.store(false, Ordering::Relaxed);
             self.base.hovered = false;
             self.base.pressed = false;
-            self.base.emit("disable", None);
+            tokio::runtime::Handle::current().block_on(self.base.emit("disable", None));
         }
     }
 
@@ -105,6 +107,7 @@ fn estimate_text_width(text: &str, font_size: u32) -> i32 {
         .ceil() as i32
 }
 
+#[async_trait]
 impl ComponentTrait for ImageButton {
     fn base(&self) -> &ComponentBase {
         &self.base
@@ -128,10 +131,10 @@ impl ComponentTrait for ImageButton {
         }
     }
 
-    fn dispatch_event(&mut self, event: &WindowEvent) -> bool {
+    async fn dispatch_event(&mut self, event: &WindowEvent) -> bool {
         if !self.enabled.load(Ordering::Relaxed) {
             return true;
         }
-        self.base.dispatch_event(event)
+        self.base.dispatch_event(event).await
     }
 }

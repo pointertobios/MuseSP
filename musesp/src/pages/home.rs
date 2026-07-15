@@ -63,9 +63,12 @@ impl AnyPage for HomePage {
         btn_start.base.min_width = 200;
         let n = nav.clone();
         btn_start.base.bind_mouse_click(Box::new(move |_| {
-            println!("[click] 开始");
-            let _ = n.blocking_send(NavAction::Push(Box::new(MusicListPage::new())));
-            false
+            let n = n.clone();
+            Box::pin(async move {
+                println!("[click] 开始");
+                let _ = n.send(NavAction::Push(Box::new(MusicListPage::new()))).await;
+                false
+            })
         }));
         content.children.push(btn_start);
 
@@ -93,8 +96,11 @@ impl AnyPage for HomePage {
         btn_exit.base.min_height = 50;
         btn_exit.base.min_width = 200;
         btn_exit.base.bind_mouse_click(Box::new(move |_| {
-            exit_clone.store(true, Ordering::Relaxed);
-            false
+            let exit_clone = exit_clone.clone();
+            Box::pin(async move {
+                exit_clone.store(true, Ordering::Relaxed);
+                false
+            })
         }));
         content.children.push(btn_exit);
 

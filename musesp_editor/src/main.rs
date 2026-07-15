@@ -51,8 +51,11 @@ impl AnyPage for EditorPage {
         back_btn.base.min_width = 200;
         let nav = self.page.nav.clone().unwrap();
         back_btn.base.bind_mouse_click(Box::new(move |_| {
-            let _ = nav.blocking_send(NavAction::Pop);
-            false
+            let nav = nav.clone();
+            Box::pin(async move {
+                let _ = nav.send(NavAction::Pop).await;
+                false
+            })
         }));
         self.page.root.children.push(back_btn);
 

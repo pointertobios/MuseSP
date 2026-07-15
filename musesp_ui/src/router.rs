@@ -75,8 +75,8 @@ impl Page {
     }
     pub fn prepare_layout(&mut self) {}
 
-    pub fn dispatch_event(&mut self, event: &WindowEvent) {
-        self.root.dispatch_event(event);
+    pub async fn dispatch_event(&mut self, event: &WindowEvent) {
+        self.root.dispatch_event(event).await;
     }
 
     pub fn draw(&self, renderer: &mut UIRenderer) {
@@ -109,7 +109,7 @@ pub trait AnyPage: Any + Send {
         RunMode::Event
     }
     async fn dispatch_event(&mut self, event: &WindowEvent) {
-        self.page_mut().dispatch_event(event);
+        self.page_mut().dispatch_event(event).await;
     }
     fn draw(&self, renderer: &mut UIRenderer) {
         self.page().draw(renderer);
@@ -166,7 +166,7 @@ impl Router {
     pub async fn push<P: AnyPage + 'static>(&mut self, page: P) {
         if let Some((current, _)) = self.stack.last_mut() {
             current.on_hide();
-            current.page_mut().root.force_mouse_exit();
+            current.page_mut().root.force_mouse_exit().await;
         }
         let mut boxed: Box<dyn AnyPage> = Box::new(page);
         self.init_page(&mut boxed).await;
@@ -191,7 +191,7 @@ impl Router {
     pub async fn clear_and_push<P: AnyPage + 'static>(&mut self, page: P) {
         if let Some((current, _)) = self.stack.last_mut() {
             current.on_hide();
-            current.page_mut().root.force_mouse_exit();
+            current.page_mut().root.force_mouse_exit().await;
         }
         for (mut p, _) in self.stack.drain(..) {
             p.destroy();
@@ -212,7 +212,7 @@ impl Router {
         }
         let (mut page, mut token) = self.stack.pop().unwrap();
         page.on_hide();
-        page.page_mut().root.force_mouse_exit();
+        page.page_mut().root.force_mouse_exit().await;
         if let Some(v) = value {
             token.resolve(v);
         }
@@ -256,7 +256,7 @@ impl Router {
                 NavAction::Push(page) => {
                     if let Some((current, _)) = self.stack.last_mut() {
                         current.on_hide();
-                        current.page_mut().root.force_mouse_exit();
+                        current.page_mut().root.force_mouse_exit().await;
                     }
                     let mut boxed = page;
                     self.init_page(&mut boxed).await;
@@ -268,7 +268,7 @@ impl Router {
                 NavAction::ClearAndPush(page) => {
                     if let Some((current, _)) = self.stack.last_mut() {
                         current.on_hide();
-                        current.page_mut().root.force_mouse_exit();
+                        current.page_mut().root.force_mouse_exit().await;
                     }
                     for (mut p, _) in self.stack.drain(..) {
                         p.destroy();
@@ -283,7 +283,7 @@ impl Router {
                     } else {
                         if let Some((current, _)) = self.stack.last_mut() {
                             current.on_hide();
-                            current.page_mut().root.force_mouse_exit();
+                            current.page_mut().root.force_mouse_exit().await;
                         }
                         for (mut p, _) in self.stack.drain(..) {
                             p.destroy();

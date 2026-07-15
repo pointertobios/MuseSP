@@ -51,7 +51,7 @@ fn resolve_config_path() -> String {
 pub async fn load_config() -> Config {
     let path_str = resolve_config_path();
     let path = Path::new(&path_str);
-    if !path.exists() {
+    if tokio::fs::metadata(path).await.is_err() {
         return Config::default();
     }
     match tokio::fs::read_to_string(path).await {

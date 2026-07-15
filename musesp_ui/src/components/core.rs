@@ -1,6 +1,9 @@
 use std::any::Any;
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 
+use async_trait::async_trait;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::PhysicalKey;
 
@@ -21,8 +24,9 @@ pub enum Direction {
     Horizontal,
 }
 
-pub type EventHandler = Box<dyn FnMut(&WindowEvent) -> bool + Send>;
+pub type EventHandler = Box<dyn FnMut(&WindowEvent) -> Pin<Box<dyn Future<Output = bool> + Send>> + Send>;
 
+#[async_trait]
 pub trait ComponentTrait: Any + Send {
     fn base(&self) -> &ComponentBase;
     fn base_mut(&mut self) -> &mut ComponentBase;
@@ -52,12 +56,12 @@ pub trait ComponentTrait: Any + Send {
         }
     }
 
-    fn dispatch_event(&mut self, event: &WindowEvent) -> bool {
-        self.base_mut().dispatch_event(event)
+    async fn dispatch_event(&mut self, event: &WindowEvent) -> bool {
+        self.base_mut().dispatch_event(event).await
     }
 
     fn set_scroll_items(&mut self, _items: Vec<Box<dyn ComponentTrait>>) {}
-    fn set_image_path(&mut self, _path: &str) {}
+    async fn set_image_path(&mut self, _path: &str) {}
 
     /// 递归计算整棵子树的布局。子类可覆写以在布局后执行额外操作。
     fn layout(&mut self, h_override: Option<Direction>) {
@@ -259,12 +263,12 @@ impl ComponentBase {
         None
     }
 
-    pub fn emit(&mut self, name: &str, event: Option<&WindowEvent>) -> bool {
+    pub async fn emit(&mut self, name: &str, event: Option<&WindowEvent>) -> bool {
         let mut propagate = true;
         if let Some(handlers) = self.handlers.get_mut(name) {
             if let Some(ev) = event {
                 for handler in handlers.iter_mut() {
-                    if !handler(ev) {
+                    if !handler(ev).await {
                         propagate = false;
                     }
                 }
@@ -274,7 +278,7 @@ impl ComponentBase {
                     position: winit::dpi::PhysicalPosition::new(0.0, 0.0),
                 };
                 for handler in handlers.iter_mut() {
-                    if !handler(&dummy) {
+                    if !handler(&dummy).await {
                         propagate = false;
                     }
                 }
@@ -287,13 +291,13 @@ impl ComponentBase {
         ((px as i32) - self.x, (py as i32) - self.y)
     }
 
-    pub fn dispatch_event(&mut self, event: &WindowEvent) -> bool {
+    pub async fn dispatch_event(&mut self, event: &WindowEvent) -> bool {
         match event {
             WindowEvent::CursorMoved { device_id, position } => {
                 self.cursor_x = position.x;
                 self.cursor_y = position.y;
                 let (lx, ly) = self.local_pos(position.x, position.y);
-                if !self.handle_mouse_move(lx, ly, event) {
+                if !self.handle_mouse_move(lx, ly, event).await {
                     return false;
                 }
                 let local_pos = winit::dpi::PhysicalPosition::new(lx as f64, ly as f64);
@@ -303,21 +307,21 @@ impl ComponentBase {
                 };
                 let n = self.children.len();
                 for i in 0..n {
-                    if !self.children[i].dispatch_event(&local_event) {
+                    if !self.children[i].dispatch_event(&local_event).await {
                         return false;
                     }
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 let (lx, ly) = self.local_pos(self.cursor_x, self.cursor_y);
-                if !self.handle_mouse_input(*state, *button, lx, ly, event) {
+                if !self.handle_mouse_input(*state, *button, lx, ly, event).await {
                     return false;
                 }
                 let n = self.children.len();
                 for i in 0..n {
                     self.children[i].base_mut().cursor_x = lx as f64;
                     self.children[i].base_mut().cursor_y = ly as f64;
-                    if !self.children[i].dispatch_event(event) {
+                    if !self.children[i].dispatch_event(event).await {
                         return false;
                     }
                 }
@@ -325,12 +329,12 @@ impl ComponentBase {
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } => {
-                if !self.handle_keyboard(key_event, event) {
+                if !self.handle_keyboard(key_event, event).await {
                     return false;
                 }
                 let n = self.children.len();
                 for i in 0..n {
-                    if !self.children[i].dispatch_event(event) {
+                    if !self.children[i].dispatch_event(event).await {
                         return false;
                     }
                 }
@@ -338,7 +342,7 @@ impl ComponentBase {
             _ => {
                 let n = self.children.len();
                 for i in 0..n {
-                    if !self.children[i].dispatch_event(event) {
+                    if !self.children[i].dispatch_event(event).await {
                         return false;
                     }
                 }
@@ -347,19 +351,19 @@ impl ComponentBase {
         true
     }
 
-    pub(crate) fn handle_mouse_move(&mut self, lx: i32, ly: i32, event: &WindowEvent) -> bool {
+    pub(crate) async fn handle_mouse_move(&mut self, lx: i32, ly: i32, event: &WindowEvent) -> bool {
         let was_hovered = self.hovered;
         self.hovered = self.in_rect(lx, ly);
         if self.hovered && !was_hovered {
-            self.emit("mouse_enter", Some(event))
+            self.emit("mouse_enter", Some(event)).await
         } else if !self.hovered && was_hovered {
-            self.emit("mouse_exit", Some(event))
+            self.emit("mouse_exit", Some(event)).await
         } else {
             true
         }
     }
 
-    pub(crate) fn handle_mouse_input(
+    pub(crate) async fn handle_mouse_input(
         &mut self,
         state: ElementState,
         button: MouseButton,
@@ -372,7 +376,7 @@ impl ComponentBase {
                 if self.in_rect(lx, ly) {
                     self.pressed = true;
                     self.pressed_button = Some(button);
-                    self.emit("mouse_down", Some(event))
+                    self.emit("mouse_down", Some(event)).await
                 } else {
                     true
                 }
@@ -381,11 +385,11 @@ impl ComponentBase {
                 let was_pressed = self.pressed;
                 self.pressed = false;
                 self.pressed_button = None;
-                if !self.emit("mouse_up", Some(event)) {
+                if !self.emit("mouse_up", Some(event)).await {
                     return false;
                 }
                 if was_pressed && self.in_rect(lx, ly) {
-                    self.emit("mouse_click", Some(event))
+                    self.emit("mouse_click", Some(event)).await
                 } else {
                     true
                 }
@@ -393,34 +397,35 @@ impl ComponentBase {
         }
     }
 
-    pub(crate) fn handle_keyboard(&mut self, key_event: &winit::event::KeyEvent, event: &WindowEvent) -> bool {
+    pub(crate) async fn handle_keyboard(&mut self, key_event: &winit::event::KeyEvent, event: &WindowEvent) -> bool {
         let PhysicalKey::Code(keycode) = key_event.physical_key else {
             return true;
         };
         match key_event.state {
             ElementState::Pressed => {
                 self.pressed_keys.push(keycode as u32);
-                self.emit("key_down", Some(event))
+                self.emit("key_down", Some(event)).await
             }
             ElementState::Released => {
                 self.pressed_keys.retain(|&x| x != keycode as u32);
-                self.emit("key_up", Some(event))
+                self.emit("key_up", Some(event)).await
             }
         }
     }
 
-    pub fn force_mouse_exit(&mut self) {
+    pub async fn force_mouse_exit(&mut self) {
         if self.hovered || self.pressed {
             if self.pressed {
                 self.pressed = false;
                 self.pressed_button = None;
-                self.emit("mouse_up", None);
+                self.emit("mouse_up", None).await;
             }
             self.hovered = false;
-            self.emit("mouse_exit", None);
+            self.emit("mouse_exit", None).await;
         }
+        // 递归调用需要 Box::pin 避免无限大小 future
         for child in &mut self.children {
-            child.base_mut().force_mouse_exit();
+            Box::pin(child.base_mut().force_mouse_exit()).await;
         }
     }
 

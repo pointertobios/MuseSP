@@ -87,8 +87,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         btn.base.v_constraint = Constraintable::None;
         let n = nav.clone();
         btn.base.bind_mouse_click(Box::new(move |_| {
-            let _ = n.blocking_send(NavAction::Push(Box::new(MenuPage::new())));
-            false
+            let n = n.clone();
+            Box::pin(async move {
+                let _ = n.send(NavAction::Push(Box::new(MenuPage::new()))).await;
+                false
+            })
         }));
         self.page.root.children.push(btn);
     }
@@ -105,11 +108,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             {
                 // 模拟菜单按钮鼠标点击（对齐 Python: 创建 dummy event 并 emit 到按钮）
                 if let Some(btn) = self.page.root.find_by_name_mut("menu_btn") {
-                    btn.emit("mouse_click", None);
+                    btn.emit("mouse_click", None).await;
                 }
                 return;
             }
         }
-        self.page.dispatch_event(event);
+        self.page.dispatch_event(event).await;
     }
 }

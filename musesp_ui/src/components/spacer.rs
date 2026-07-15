@@ -1,3 +1,4 @@
+use async_trait::async_trait;
 use winit::event::WindowEvent;
 
 use crate::components::core::{ComponentBase, ComponentTrait, Constraintable};
@@ -18,6 +19,7 @@ impl Spacer {
     }
 }
 
+#[async_trait]
 impl ComponentTrait for Spacer {
     fn base(&self) -> &ComponentBase {
         &self.base
@@ -26,7 +28,7 @@ impl ComponentTrait for Spacer {
         &mut self.base
     }
 
-    fn dispatch_event(&mut self, event: &WindowEvent) -> bool {
+    async fn dispatch_event(&mut self, event: &WindowEvent) -> bool {
         match event {
             WindowEvent::CursorMoved { device_id, position } => {
                 let (lx, ly) = self.base.local_pos(position.x, position.y);
@@ -36,7 +38,7 @@ impl ComponentTrait for Spacer {
                     position: local_pos,
                 };
                 for child in &mut self.base.children {
-                    if !child.dispatch_event(&local_event) {
+                    if !child.dispatch_event(&local_event).await {
                         return false;
                     }
                 }
@@ -46,14 +48,14 @@ impl ComponentTrait for Spacer {
                 for child in &mut self.base.children {
                     child.base_mut().cursor_x = lx as f64;
                     child.base_mut().cursor_y = ly as f64;
-                    if !child.dispatch_event(event) {
+                    if !child.dispatch_event(event).await {
                         return false;
                     }
                 }
             }
             _ => {
                 for child in &mut self.base.children {
-                    if !child.dispatch_event(event) {
+                    if !child.dispatch_event(event).await {
                         return false;
                     }
                 }

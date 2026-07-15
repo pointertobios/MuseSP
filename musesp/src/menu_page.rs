@@ -83,12 +83,15 @@ impl AnyPage for MenuPage {
             let n = nav.clone();
             let lbl = *label;
             btn.base.bind_mouse_click(Box::new(move |_| {
-                match lbl {
-                    "取消" => { let _ = n.blocking_send(NavAction::Pop); }
-                    "退出" => { let _ = n.blocking_send(NavAction::ClearAndPush(Box::new(MusicListPage::new()))); }
-                    _ => {}
-                }
-                false
+                let n = n.clone();
+                Box::pin(async move {
+                    match lbl {
+                        "取消" => { let _ = n.send(NavAction::Pop).await; }
+                        "退出" => { let _ = n.send(NavAction::ClearAndPush(Box::new(MusicListPage::new()))).await; }
+                        _ => {}
+                    }
+                    false
+                })
             }));
             row.children.push(btn);
 
@@ -151,7 +154,7 @@ impl AnyPage for MenuPage {
             {
                 // Python: 创建 dummy MOUSEBUTTONUP event，emit 到 cancel_btn 的 mouse_click
                 if let Some(btn) = self.page.root.find_by_name_mut("cancel_btn") {
-                    btn.emit("mouse_click", None);
+                    btn.emit("mouse_click", None).await;
                 }
                 return;
             }
@@ -179,6 +182,6 @@ impl AnyPage for MenuPage {
         if !in_menu {
             return;
         }
-        self.page.dispatch_event(event);
+        self.page.dispatch_event(event).await;
     }
 }

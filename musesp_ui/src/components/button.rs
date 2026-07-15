@@ -3,6 +3,8 @@ use std::sync::Arc;
 
 use winit::event::WindowEvent;
 
+use async_trait::async_trait;
+
 use crate::components::core::{ComponentBase, ComponentTrait, Constraintable, Direction, EventHandler};
 use crate::components::label::Label;
 use crate::renderer::UIRenderer;
@@ -44,16 +46,16 @@ impl Button {
     pub fn enable(&mut self) {
         if !self.enabled.load(Ordering::Relaxed) {
             self.enabled.store(true, Ordering::Relaxed);
-            self.base.emit("enable", None);
+            tokio::runtime::Handle::current().block_on(self.base.emit("enable", None));
         }
     }
 
-    pub fn disable(&mut self) {
+    pub async fn disable(&mut self) {
         if self.enabled.load(Ordering::Relaxed) {
             self.enabled.store(false, Ordering::Relaxed);
             self.base.hovered = false;
             self.base.pressed = false;
-            self.base.emit("disable", None);
+            self.base.emit("disable", None).await;
         }
     }
 
@@ -66,6 +68,7 @@ impl Button {
     }
 }
 
+#[async_trait]
 impl ComponentTrait for Button {
     fn base(&self) -> &ComponentBase {
         &self.base
@@ -95,10 +98,10 @@ impl ComponentTrait for Button {
         }
     }
 
-    fn dispatch_event(&mut self, event: &WindowEvent) -> bool {
+    async fn dispatch_event(&mut self, event: &WindowEvent) -> bool {
         if !self.enabled.load(Ordering::Relaxed) {
             return true;
         }
-        self.base.dispatch_event(event)
+        self.base.dispatch_event(event).await
     }
 }

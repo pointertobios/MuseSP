@@ -1,14 +1,21 @@
+use std::future::Future;
+use std::pin::Pin;
+
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+
+use async_trait::async_trait;
 
 use crate::components::core::{ComponentBase, ComponentTrait, Direction};
 use crate::renderer::UIRenderer;
+
+pub type SelectHandler = Box<dyn FnMut(&str) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>;
 
 pub struct ScrollList {
     pub base: ComponentBase,
     pub item_height: i32,
     pub scroll: i32,
     pub max_scroll: i32,
-    pub on_select: Option<Box<dyn FnMut(&str) + Send>>,
+    pub on_select: Option<SelectHandler>,
     pub selected_id: Option<String>,
 }
 
@@ -37,7 +44,7 @@ impl ScrollList {
         self.propagate_width();
     }
 
-    pub fn bind_on_select(&mut self, handler: Box<dyn FnMut(&str) + Send>) {
+    pub fn bind_on_select(&mut self, handler: SelectHandler) {
         self.on_select = Some(handler);
     }
 
@@ -60,6 +67,7 @@ impl ScrollList {
     }
 }
 
+#[async_trait]
 impl ComponentTrait for ScrollList {
     fn base(&self) -> &ComponentBase {
         &self.base
@@ -105,7 +113,7 @@ impl ComponentTrait for ScrollList {
         self.propagate_width();
     }
 
-    fn dispatch_event(&mut self, event: &WindowEvent) -> bool {
+    async fn dispatch_event(&mut self, event: &WindowEvent) -> bool {
         match event {
             WindowEvent::MouseWheel { delta, .. } => {
                 let (lx, ly) = self.base.local_pos(self.base.cursor_x, self.base.cursor_y);
@@ -124,53 +132,58 @@ impl ComponentTrait for ScrollList {
             }
             WindowEvent::CursorMoved { device_id, position } => {
                 let (lx, ly) = self.base.local_pos(position.x, position.y);
-                if !self.base.handle_mouse_move(lx, ly, event) {
+                if !self.base.handle_mouse_move(lx, ly, event).await {
                     return false;
                 }
                 let local_event = WindowEvent::CursorMoved {
                     device_id: *device_id,
                     position: winit::dpi::PhysicalPosition::new(lx as f64, ly as f64),
                 };
-                return self.dispatch_to_visible_children(&local_event);
+                return self.dispatch_to_visible_children(&local_event).await;
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 let (lx, ly) = self.base.local_pos(self.base.cursor_x, self.base.cursor_y);
 
                 if *state == ElementState::Pressed && *button == MouseButton::Left {
                     if self.base.in_rect(lx, ly) {
+                        let mut triggered: Option<String> = None;
                         for child in &self.base.children {
                             let cy = child.base().y;
                             if -child.base().height < cy && cy < self.base.height {
                                 if child.base().in_rect(lx, ly - cy) {
                                     if let Some(ref item_id) = child.base().item_id {
                                         if self.selected_id.as_deref() != Some(item_id) {
-                                            self.selected_id = Some(item_id.clone());
-                                            if let Some(ref mut handler) = self.on_select {
-                                                handler(item_id);
-                                            }
+                                            triggered = Some(item_id.clone());
                                         }
                                     }
-                                    return false;
+                                    break;
                                 }
                             }
+                        }
+                        if let Some(ref item_id) = triggered {
+                            self.selected_id = Some(item_id.clone());
+                            if let Some(ref mut handler) = self.on_select {
+                                handler(item_id).await;
+                            }
+                            return false;
                         }
                     }
                 }
 
-                if !self.base.handle_mouse_input(*state, *button, lx, ly, event) {
+                if !self.base.handle_mouse_input(*state, *button, lx, ly, event).await {
                     return false;
                 }
-                return self.dispatch_to_visible_children(event);
+                return self.dispatch_to_visible_children(event).await;
             }
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } => {
-                if !self.base.handle_keyboard(key_event, event) {
+                if !self.base.handle_keyboard(key_event, event).await {
                     return false;
                 }
-                return self.dispatch_to_visible_children(event);
+                return self.dispatch_to_visible_children(event).await;
             }
-            _ => return self.dispatch_to_visible_children(event),
+            _ => return self.dispatch_to_visible_children(event).await,
         }
         true
     }
@@ -181,9 +194,8 @@ impl ComponentTrait for ScrollList {
 }
 
 impl ScrollList {
-    fn dispatch_to_visible_children(&mut self, event: &WindowEvent) -> bool {
+    async fn dispatch_to_visible_children(&mut self, event: &WindowEvent) -> bool {
         let n = self.base.children.len();
-        // 将光标坐标转换为 ScrollList 本地坐标，和 Python _shift_event 对齐
         let local_cx = self.base.cursor_x - self.base.x as f64;
         let local_cy = self.base.cursor_y - self.base.y as f64;
         for i in 0..n {
@@ -191,7 +203,7 @@ impl ScrollList {
             if -self.base.children[i].base().height < cy && cy < self.base.height {
                 self.base.children[i].base_mut().cursor_x = local_cx;
                 self.base.children[i].base_mut().cursor_y = local_cy;
-                if !self.base.children[i].dispatch_event(event) {
+                if !self.base.children[i].dispatch_event(event).await {
                     return false;
                 }
             }

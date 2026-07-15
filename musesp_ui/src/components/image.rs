@@ -1,3 +1,5 @@
+use async_trait::async_trait;
+
 use crate::components::core::{ComponentBase, ComponentTrait};
 use crate::renderer::UIRenderer;
 
@@ -39,7 +41,11 @@ impl Image {
         if path.ends_with(".svg") {
             return Self::load_svg(path).await;
         }
-        let img = image::open(path).ok()?;
+        let path_owned = path.to_owned();
+        let img = tokio::task::spawn_blocking(move || image::open(path_owned))
+            .await
+            .ok()?
+            .ok()?;
         let rgba = img.into_rgba8();
         let (w, h) = rgba.dimensions();
         Some(ImageData { rgba: rgba.into_raw(), width: w, height: h })
@@ -101,6 +107,7 @@ impl Image {
     }
 }
 
+#[async_trait]
 impl ComponentTrait for Image {
     fn base(&self) -> &ComponentBase { &self.base }
     fn base_mut(&mut self) -> &mut ComponentBase { &mut self.base }
@@ -128,7 +135,7 @@ impl ComponentTrait for Image {
         renderer.draw_image(dx, dy, dw, dh, self.image_data.as_ref());
     }
 
-    fn set_image_path(&mut self, path: &str) {
-        tokio::runtime::Handle::current().block_on(self.set_image(path));
+    async fn set_image_path(&mut self, path: &str) {
+        self.set_image(path).await;
     }
 }

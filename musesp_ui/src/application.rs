@@ -35,6 +35,7 @@ pub struct Application {
     text_buffers: Vec<glyphon::Buffer>,
     initial_page: Option<Box<dyn AnyPage>>,
     should_exit: Arc<AtomicBool>,
+    rt_handle: tokio::runtime::Handle,
 }
 
 impl Application {
@@ -56,8 +57,8 @@ impl Application {
             text_buffers: Vec::new(),
             initial_page: Some(Box::new(page)),
             should_exit: Arc::new(AtomicBool::new(false)),
+            rt_handle: rt.handle().clone(),
         };
-        let _guard = rt.enter();
         let event_loop = winit::event_loop::EventLoop::new().unwrap();
         event_loop.run_app(&mut app).unwrap();
     }
@@ -78,8 +79,7 @@ impl Application {
         {
             let mut router_ref = router_rc.borrow_mut();
             if let Some(mut page) = self.initial_page.take() {
-                let h = tokio::runtime::Handle::current();
-                h.block_on(router_ref.init_page(&mut page));
+                self.rt_handle.block_on(router_ref.init_page(&mut page));
                 router_ref.stack.push((page, PageToken::new()));
             }
         }
@@ -247,7 +247,7 @@ impl ApplicationHandler for Application {
         let size = window.inner_size();
 
         self.init_router(size.width as i32, size.height as i32);
-        let wgpu = tokio::runtime::Handle::current().block_on(WgpuRenderer::new(window.clone()));
+        let wgpu = self.rt_handle.block_on(WgpuRenderer::new(window.clone()));
         let format = wgpu.config.format;
 
         let cache = glyphon::Cache::new(&wgpu.device);
@@ -318,7 +318,7 @@ impl ApplicationHandler for Application {
             | WindowEvent::MouseWheel { .. }
             | WindowEvent::KeyboardInput { .. } => {
                 if let Some(ref router) = self.router {
-                    tokio::runtime::Handle::current().block_on(router.borrow_mut().dispatch_event(&event));
+                    self.rt_handle.block_on(router.borrow_mut().dispatch_event(&event));
                     if self.should_exit.load(Ordering::Relaxed) {
                         event_loop.exit();
                         return;
