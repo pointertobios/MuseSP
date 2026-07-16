@@ -11,3 +11,4 @@ winit = "0.30.13"
 toml = "1.1.2"
 tokio = { version = "1.52.3", features = ["full"] }
 async-trait = "0.1.89"
+bytemuck = "1.25.1"

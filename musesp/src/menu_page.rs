@@ -126,7 +126,7 @@ impl AnyPage for MenuPage {
         self.page.root.layout(None);
     }
 
-    fn draw(&self, renderer: &mut UIRenderer) {
+    fn draw(&self, renderer: &mut UIRenderer, screen_w: u32, screen_h: u32) {
         renderer.draw_rect(
             self.menu_x,
             self.menu_y,
@@ -134,7 +134,7 @@ impl AnyPage for MenuPage {
             self.menu_h,
             (255, 255, 255, 180),
         );
-        self.page.draw(renderer);
+        self.page.draw(renderer, screen_w, screen_h);
     }
 
     fn draw_debug(&self, renderer: &mut UIRenderer, config: &Config) {

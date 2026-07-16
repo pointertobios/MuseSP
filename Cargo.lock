@@ -1442,6 +1442,7 @@ name = "musesp"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "bytemuck",
  "musesp_config",
  "musesp_ui",
  "tokio",

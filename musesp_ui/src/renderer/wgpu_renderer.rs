@@ -5,7 +5,7 @@ use std::time::Instant;
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
-use super::types::{DrawImage, DrawRect, DrawRendererCanvas, VertexLayoutDesc};
+use super::types::{DrawCompute, DrawImage, DrawRect, DrawRendererCanvas, VertexLayoutDesc};
 
 const SHADER_WGSL: &str = include_str!("../shaders/rect.wgsl");
 const TEXTURE_SHADER_WGSL: &str = include_str!("../shaders/texture.wgsl");
@@ -26,16 +26,41 @@ pub struct WgpuRenderer {
     pipeline: wgpu::RenderPipeline,
     pipeline_texture: wgpu::RenderPipeline,
     texture_bind_group_layout: wgpu::BindGroupLayout,
-    #[allow(dead_code)]
-    camera_bind_group_layout: wgpu::BindGroupLayout,
+    _camera_bind_group_layout: wgpu::BindGroupLayout,
     pub camera_buffer: wgpu::Buffer,
-    #[allow(dead_code)]
-    depth_texture: wgpu::Texture,
+    _depth_texture: wgpu::Texture,
     pub depth_view: wgpu::TextureView,
     pub start_time: Instant,
     custom_pipelines: HashMap<(u64, u64), wgpu::RenderPipeline>,
     custom_bgl: Option<wgpu::BindGroupLayout>,
     custom_bgl_hash: u64,
+    // Compute 管线缓存
+    compute_pipelines: HashMap<u64, wgpu::ComputePipeline>,
+    compute_bgls: HashMap<u64, wgpu::BindGroupLayout>,
+    // 全屏显示管线缓存
+    display_pipelines: HashMap<u64, wgpu::RenderPipeline>,
+    display_bgls: HashMap<u64, wgpu::BindGroupLayout>,
+    // Compute 输出 framebuffer（array<vec4<f32>>），按需 resize
+    framebuffer: Option<wgpu::Buffer>,
+    fb_capacity: u32, // 当前 framebuffer 可容纳的像素数
+    // 双缓冲持久化 compute buffer：避免每帧 create_buffer_init
+    comp_vertex_bufs: [Option<wgpu::Buffer>; 2],
+    comp_vertex_caps: [u64; 2],
+    comp_index_bufs: [Option<wgpu::Buffer>; 2],
+    comp_index_caps: [u64; 2],
+    comp_uniform_bufs: [Option<wgpu::Buffer>; 2],
+    comp_frame_idx: usize,
+    // 双缓冲全屏参数 uniform
+    fs_uniform_bufs: [Option<wgpu::Buffer>; 2],
+    // 双缓冲 custom draw buffer（RendererCanvas 路径）
+    custom_vertex_bufs: [Option<wgpu::Buffer>; 2],
+    custom_vertex_caps: [u64; 2],
+    custom_index_bufs: [Option<wgpu::Buffer>; 2],
+    custom_index_caps: [u64; 2],
+    custom_uniform_bufs: [Option<wgpu::Buffer>; 2],
+    custom_frame_idx: usize,
+    // 双缓冲 custom bind group（避免每帧重建）
+    custom_bind_groups: [Option<wgpu::BindGroup>; 2],
 }
 
 impl WgpuRenderer {
@@ -228,14 +253,34 @@ impl WgpuRenderer {
             pipeline,
             pipeline_texture,
             texture_bind_group_layout,
-            camera_bind_group_layout,
+            _camera_bind_group_layout: camera_bind_group_layout,
             camera_buffer,
-            depth_texture,
+            _depth_texture: depth_texture,
             depth_view,
             start_time: Instant::now(),
             custom_pipelines: HashMap::new(),
             custom_bgl: None,
             custom_bgl_hash: 0,
+            compute_pipelines: HashMap::new(),
+            compute_bgls: HashMap::new(),
+            display_pipelines: HashMap::new(),
+            display_bgls: HashMap::new(),
+            framebuffer: None,
+            fb_capacity: 0,
+            comp_vertex_bufs: [None, None],
+            comp_vertex_caps: [0, 0],
+            comp_index_bufs: [None, None],
+            comp_index_caps: [0, 0],
+            comp_uniform_bufs: [None, None],
+            comp_frame_idx: 0,
+            fs_uniform_bufs: [None, None],
+            custom_vertex_bufs: [None, None],
+            custom_vertex_caps: [0, 0],
+            custom_index_bufs: [None, None],
+            custom_index_caps: [0, 0],
+            custom_uniform_bufs: [None, None],
+            custom_frame_idx: 0,
+            custom_bind_groups: [None, None],
         }
     }
 
@@ -371,6 +416,12 @@ impl WgpuRenderer {
         let sw = self.config.width as f32;
         let sh = self.config.height as f32;
 
+        // 切换帧槽位
+        let idx = self.custom_frame_idx;
+        self.custom_frame_idx ^= 1;
+        // 新帧使 bind_group 缓存失效
+        self.custom_bind_groups[idx] = None;
+
         for draw in draws {
             if draw.snapshot.vertex_data.is_empty() || draw.snapshot.vertex_count == 0 {
                 continue;
@@ -442,17 +493,17 @@ impl WgpuRenderer {
                     (None, None)
                 };
 
-                let uniform_buf = if has_uniform {
-                    Some(self.device.create_buffer_init(
-                        &wgpu::util::BufferInitDescriptor {
-                            label: Some("custom_uniform"),
-                            contents: &draw.snapshot.uniform_data,
-                            usage: wgpu::BufferUsages::UNIFORM,
-                        },
-                    ))
-                } else {
-                    None
-                };
+                if has_uniform {
+                    self.ensure_custom_uniform_buf(idx, draw.snapshot.uniform_data.len() as u64);
+                    self.queue.write_buffer(
+                        self.custom_uniform_bufs[idx].as_ref().unwrap(),
+                        0,
+                        &draw.snapshot.uniform_data,
+                    );
+                }
+
+                let binding = if has_tex { 2u32 } else { 0u32 };
+                let ub = self.custom_uniform_bufs[idx].as_ref().unwrap();
 
                 let mut entries: Vec<wgpu::BindGroupEntry<'_>> = Vec::new();
                 if let Some(ref tv) = tex_view {
@@ -467,8 +518,7 @@ impl WgpuRenderer {
                         resource: wgpu::BindingResource::Sampler(s),
                     });
                 }
-                if let Some(ref ub) = uniform_buf {
-                    let binding = if has_tex { 2u32 } else { 0u32 };
+                if has_uniform {
                     entries.push(wgpu::BindGroupEntry {
                         binding,
                         resource: ub.as_entire_binding(),
@@ -483,27 +533,35 @@ impl WgpuRenderer {
                 rp.set_bind_group(0, &bind_group, &[]);
             }
 
-            let vertex_buf =
-                self.device
-                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("custom_vbuf"),
-                        contents: &draw.snapshot.vertex_data,
-                        usage: wgpu::BufferUsages::VERTEX,
-                    });
+            let vbuf_len = draw.snapshot.vertex_data.len() as u64;
+            self.ensure_custom_vertex_buf(idx, vbuf_len);
+            self.queue.write_buffer(
+                self.custom_vertex_bufs[idx].as_ref().unwrap(),
+                0,
+                &draw.snapshot.vertex_data,
+            );
 
             let is_indexed =
                 draw.snapshot.index_count > 0 && !draw.snapshot.index_data.is_empty();
+
             rp.set_pipeline(&pipeline);
-            rp.set_vertex_buffer(0, vertex_buf.slice(..));
+            rp.set_vertex_buffer(
+                0,
+                self.custom_vertex_bufs[idx].as_ref().unwrap().slice(..),
+            );
+
             if is_indexed {
-                let index_buf =
-                    self.device
-                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some("custom_ibuf"),
-                            contents: bytemuck::cast_slice(&draw.snapshot.index_data),
-                            usage: wgpu::BufferUsages::INDEX,
-                        });
-                rp.set_index_buffer(index_buf.slice(..), wgpu::IndexFormat::Uint32);
+                let ibuf_bytes = bytemuck::cast_slice(&draw.snapshot.index_data);
+                self.ensure_custom_index_buf(idx, ibuf_bytes.len() as u64);
+                self.queue.write_buffer(
+                    self.custom_index_bufs[idx].as_ref().unwrap(),
+                    0,
+                    ibuf_bytes,
+                );
+                rp.set_index_buffer(
+                    self.custom_index_bufs[idx].as_ref().unwrap().slice(..),
+                    wgpu::IndexFormat::Uint32,
+                );
                 rp.draw_indexed(0..draw.snapshot.index_count, 0, 0..1);
             } else {
                 rp.draw(0..draw.snapshot.vertex_count, 0..1);
@@ -512,6 +570,169 @@ impl WgpuRenderer {
             if draw.clip_rect.is_some() {
                 rp.set_scissor_rect(0, 0, sw as u32, sh as u32);
             }
+        }
+    }
+
+    // ── Compute 管线 ─────────────────────────────────────────────────
+
+    /// 运行所有 compute 绘制命令的 compute pass。
+    ///
+    /// 每个 `DrawCompute` 对应一次 compute dispatch，结果写入内部 framebuffer。
+    /// 使用双缓冲持久化 buffer 避免每帧 GPU 内存分配。
+    pub fn run_compute_passes(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        draws: &[DrawCompute],
+    ) {
+        if draws.is_empty() {
+            return;
+        }
+
+        let screen_w = self.config.width;
+        let screen_h = self.config.height;
+        let pixel_count = screen_w * screen_h;
+
+        self.ensure_framebuffer(pixel_count);
+
+        // 切换到下一帧的 buffer 槽位
+        let idx = self.comp_frame_idx;
+        self.comp_frame_idx ^= 1;
+
+        for draw in draws {
+            let snap = &draw.snapshot;
+            if snap.triangle_count == 0 {
+                continue;
+            }
+
+            let (comp_pipeline, comp_bgl) =
+                self.get_or_create_compute_pipeline(&draw.compute_wgsl);
+
+            // 确保双缓冲 buffer 容量足够，然后写入数据
+            self.ensure_comp_vertex_buf(idx, snap.vertex_data.len() as u64);
+            self.queue.write_buffer(
+                self.comp_vertex_bufs[idx].as_ref().unwrap(),
+                0,
+                &snap.vertex_data,
+            );
+
+            let index_bytes = bytemuck::cast_slice(&snap.indices);
+            self.ensure_comp_index_buf(idx, index_bytes.len() as u64);
+            self.queue.write_buffer(
+                self.comp_index_bufs[idx].as_ref().unwrap(),
+                0,
+                index_bytes,
+            );
+
+            self.ensure_comp_uniform_buf(idx, snap.uniform_data.len() as u64);
+            self.queue.write_buffer(
+                self.comp_uniform_bufs[idx].as_ref().unwrap(),
+                0,
+                &snap.uniform_data,
+            );
+
+            let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("comp_bg"),
+                layout: &comp_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: self.comp_vertex_bufs[idx]
+                            .as_ref()
+                            .unwrap()
+                            .as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: self.comp_index_bufs[idx]
+                            .as_ref()
+                            .unwrap()
+                            .as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: self.comp_uniform_bufs[idx]
+                            .as_ref()
+                            .unwrap()
+                            .as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: self.framebuffer.as_ref().unwrap().as_entire_binding(),
+                    },
+                ],
+            });
+
+            let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("comp_pass"),
+                timestamp_writes: None,
+            });
+            cp.set_pipeline(&comp_pipeline);
+            cp.set_bind_group(0, &bind_group, &[]);
+            cp.dispatch_workgroups(
+                (screen_w + 15) / 16,
+                (screen_h + 15) / 16,
+                1,
+            );
+        }
+    }
+
+    /// 在 render pass 中绘制全屏四边形，显示 compute 输出。
+    pub fn draw_display(
+        &mut self,
+        rp: &mut wgpu::RenderPass<'_>,
+        draws: &[DrawCompute],
+    ) {
+        if draws.is_empty() {
+            return;
+        }
+        let format = self.config.format;
+
+        // 双缓冲全屏参数 uniform，使用与 compute pass 相同的帧索引
+        let idx = self.comp_frame_idx ^ 1; // 与 compute pass 使用同一个 slot
+        #[repr(C)]
+        #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+        struct FsParams {
+            fb_pitch: u32,
+        }
+        let fs_params = FsParams {
+            fb_pitch: self.config.width,
+        };
+        self.ensure_fs_uniform_buf(idx, std::mem::size_of::<FsParams>() as u64);
+        self.queue.write_buffer(
+            self.fs_uniform_bufs[idx].as_ref().unwrap(),
+            0,
+            bytemuck::bytes_of(&fs_params),
+        );
+
+        for draw in draws {
+            if draw.snapshot.triangle_count == 0 {
+                continue;
+            }
+            let (fs_pipeline, fs_bgl) =
+                self.get_or_create_display_pipeline(&draw.display_wgsl, format);
+
+            let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("fs_bg"),
+                layout: &fs_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: self.framebuffer.as_ref().unwrap().as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: self.fs_uniform_bufs[idx]
+                            .as_ref()
+                            .unwrap()
+                            .as_entire_binding(),
+                    },
+                ],
+            });
+
+            rp.set_pipeline(&fs_pipeline);
+            rp.set_bind_group(0, &bind_group, &[]);
+            // 全屏三角形：3 顶点，无需顶点缓冲区（shader 用 @builtin(vertex_index)）
+            rp.draw(0..3, 0..1);
         }
     }
 
@@ -534,6 +755,324 @@ impl WgpuRenderer {
     }
 
     // ── private helpers ────────────────────────────────────────────────
+
+    fn ensure_framebuffer(&mut self, pixel_count: u32) {
+        if self.fb_capacity >= pixel_count {
+            return;
+        }
+        // vec4<f32> = 16 bytes per pixel
+        let size = pixel_count as u64 * 16;
+        self.framebuffer = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("compute_fb"),
+            size,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        }));
+        self.fb_capacity = pixel_count;
+    }
+
+    /// 确保双缓冲 vertex buffer 容量足够。
+    fn ensure_comp_vertex_buf(&mut self, idx: usize, capacity: u64) {
+        if self.comp_vertex_caps[idx] >= capacity {
+            return;
+        }
+        // 预分配 2× 容量以减少后续 resize
+        let size = capacity.max(256).next_power_of_two();
+        self.comp_vertex_bufs[idx] = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("comp_vertices"),
+            size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        }));
+        self.comp_vertex_caps[idx] = size;
+    }
+
+    /// 确保双缓冲 index buffer 容量足够。
+    fn ensure_comp_index_buf(&mut self, idx: usize, capacity: u64) {
+        if self.comp_index_caps[idx] >= capacity {
+            return;
+        }
+        let size = capacity.max(256).next_power_of_two();
+        self.comp_index_bufs[idx] = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("comp_indices"),
+            size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        }));
+        self.comp_index_caps[idx] = size;
+    }
+
+    /// 确保双缓冲 uniform buffer 容量足够。
+    fn ensure_comp_uniform_buf(&mut self, idx: usize, capacity: u64) {
+        // uniform 大小固定（ComputeParams = 80 bytes），只分配一次
+        if self.comp_uniform_bufs[idx].is_some() {
+            return;
+        }
+        let size = capacity.max(128).next_power_of_two();
+        self.comp_uniform_bufs[idx] = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("comp_params"),
+            size,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        }));
+    }
+
+    /// 确保双缓冲 fullscreen uniform buffer 容量足够。
+    fn ensure_fs_uniform_buf(&mut self, idx: usize, capacity: u64) {
+        if self.fs_uniform_bufs[idx].is_some() {
+            return;
+        }
+        let size = capacity.max(16).next_power_of_two();
+        self.fs_uniform_bufs[idx] = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("fs_params"),
+            size,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        }));
+    }
+
+    /// 确保双缓冲 custom vertex buffer 容量足够。
+    fn ensure_custom_vertex_buf(&mut self, idx: usize, capacity: u64) {
+        if self.custom_vertex_caps[idx] >= capacity {
+            return;
+        }
+        let size = capacity.max(256).next_power_of_two();
+        self.custom_vertex_bufs[idx] = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("custom_vbuf"),
+            size,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        }));
+        self.custom_vertex_caps[idx] = size;
+    }
+
+    /// 确保双缓冲 custom index buffer 容量足够。
+    fn ensure_custom_index_buf(&mut self, idx: usize, capacity: u64) {
+        if self.custom_index_caps[idx] >= capacity {
+            return;
+        }
+        let size = capacity.max(256).next_power_of_two();
+        self.custom_index_bufs[idx] = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("custom_ibuf"),
+            size,
+            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        }));
+        self.custom_index_caps[idx] = size;
+    }
+
+    /// 确保双缓冲 custom uniform buffer 容量足够。
+    fn ensure_custom_uniform_buf(&mut self, idx: usize, capacity: u64) {
+        if self.custom_uniform_bufs[idx].is_some() {
+            return;
+        }
+        let size = capacity.max(128).next_power_of_two();
+        self.custom_uniform_bufs[idx] = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("custom_uniform"),
+            size,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        }));
+    }
+
+    fn get_or_create_compute_pipeline(
+        &mut self,
+        compute_wgsl: &str,
+    ) -> (wgpu::ComputePipeline, wgpu::BindGroupLayout) {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        compute_wgsl.hash(&mut h);
+        let key = h.finish();
+
+        if let Some(pipeline) = self.compute_pipelines.get(&key) {
+            let bgl = self.compute_bgls.get(&key).unwrap().clone();
+            return (pipeline.clone(), bgl);
+        }
+
+        let shader = self
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("compute_shader"),
+                source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(compute_wgsl)),
+            });
+
+        let bgl = self
+            .device
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("compute_bgl"),
+                entries: &[
+                    // binding 0: vertex buffer (storage, read)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // binding 1: sorted indices buffer (storage, read)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // binding 2: params (uniform)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // binding 3: framebuffer (storage, read_write)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+
+        let pipeline_layout =
+            self.device
+                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("compute_layout"),
+                    bind_group_layouts: &[Some(&bgl)],
+                    ..Default::default()
+                });
+
+        let pipeline =
+            self.device
+                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some("compute_pipeline"),
+                    layout: Some(&pipeline_layout),
+                    module: &shader,
+                    entry_point: Some("main"),
+                    compilation_options: Default::default(),
+                    cache: None,
+                });
+
+        self.compute_pipelines.insert(key, pipeline.clone());
+        self.compute_bgls.insert(key, bgl.clone());
+        (pipeline, bgl)
+    }
+
+    fn get_or_create_display_pipeline(
+        &mut self,
+        display_wgsl: &str,
+        format: wgpu::TextureFormat,
+    ) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout) {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        display_wgsl.hash(&mut h);
+        let key = h.finish();
+
+        if let Some(pipeline) = self.display_pipelines.get(&key) {
+            let bgl = self.display_bgls.get(&key).unwrap().clone();
+            return (pipeline.clone(), bgl);
+        }
+
+        let shader = self
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("display_shader"),
+                source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(display_wgsl)),
+            });
+
+        let bgl = self
+            .device
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("display_bgl"),
+                entries: &[
+                    // binding 0: framebuffer (storage, read)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // binding 1: fs_params (uniform)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+
+        let pipeline_layout =
+            self.device
+                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("display_layout"),
+                    bind_group_layouts: &[Some(&bgl)],
+                    ..Default::default()
+                });
+
+        let pipeline =
+            self.device
+                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("display_pipeline"),
+                    layout: Some(&pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &shader,
+                        entry_point: Some("vs_main"),
+                        buffers: &[], // 无顶点缓冲区（用 @builtin(vertex_index)）
+                        compilation_options: Default::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &shader,
+                        entry_point: Some("fs_main"),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format,
+                            blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: Default::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState {
+                        topology: wgpu::PrimitiveTopology::TriangleList,
+                        ..Default::default()
+                    },
+                    depth_stencil: Some(wgpu::DepthStencilState {
+                        format: wgpu::TextureFormat::Depth32Float,
+                        depth_write_enabled: Some(false),
+                        depth_compare: Some(wgpu::CompareFunction::Always),
+                        stencil: wgpu::StencilState::default(),
+                        bias: wgpu::DepthBiasState::default(),
+                    }),
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
+                });
+
+        self.display_pipelines.insert(key, pipeline.clone());
+        self.display_bgls.insert(key, bgl.clone());
+        (pipeline, bgl)
+    }
 
     fn get_or_create_custom_pipeline(
         &mut self,

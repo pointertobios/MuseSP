@@ -8,7 +8,6 @@
 Cargo.toml          # workspace 根，声明所有成员 crate
 musesp/             # 主程序入口 + 页面实现
 musesp_ui/          # UI 框架（组件、路由、渲染器）
-musesp_gameplay/    # 游戏玩法模块（独立 crate，含自己的 Cargo.toml）
 musesp_config/      # 配置模块
 musesp_editor/      # 编辑器模块
 ```

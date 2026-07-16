@@ -8,7 +8,7 @@ use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::Window;
 
-use crate::renderer::{UIRenderer, WgpuRenderer};
+use crate::renderer::{FrameDrawList, FramePipeline, UIRenderer, WgpuRenderer};
 use crate::router::{AnyPage, PageToken, Router};
 use musesp_config::config::Config;
 
@@ -36,6 +36,10 @@ pub struct Application {
     initial_page: Option<Box<dyn AnyPage>>,
     should_exit: Arc<AtomicBool>,
     rt_handle: tokio::runtime::Handle,
+    /// 异步帧管线：协调后台帧准备与主线程 GPU 提交
+    frame_pipeline: Option<FramePipeline>,
+    /// 当前帧的绘制数据（从 UIRenderer 提取，可跨线程传递）
+    current_draw_list: FrameDrawList,
 }
 
 impl Application {
@@ -58,6 +62,8 @@ impl Application {
             initial_page: Some(Box::new(page)),
             should_exit: Arc::new(AtomicBool::new(false)),
             rt_handle: rt.handle().clone(),
+            frame_pipeline: None,
+            current_draw_list: FrameDrawList::new(),
         };
         let event_loop = winit::event_loop::EventLoop::new().unwrap();
         event_loop.run_app(&mut app).unwrap();
@@ -91,13 +97,17 @@ impl Application {
         let atlas = self.text_atlas.as_mut().unwrap();
         let text_renderer = self.text_renderer.as_mut().unwrap();
 
-        // 收集绘制命令
+        // 1. 收集绘制命令（主线程，遍历组件树）
         self.renderer.clear();
         if let Some(ref router) = self.router {
             router.borrow().draw_pages(&mut self.renderer, &self.config);
         }
 
-        // 获取 surface texture
+        // 2. 提取为 FrameDrawList（Send-able，为异步准备管线打基础）
+        self.current_draw_list = FrameDrawList::from_renderer(&mut self.renderer);
+        let dl = &self.current_draw_list;
+
+        // 3. 获取 surface texture
         let output = match wgpu.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t) => t,
             wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
@@ -114,7 +124,7 @@ impl Application {
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
 
-        // glyphon 文本排版
+        // 4. glyphon 文本排版
         let mut viewport =
             glyphon::Viewport::new(&wgpu.device, self.glyphon_cache.as_ref().unwrap());
         viewport.update(
@@ -125,25 +135,45 @@ impl Application {
             },
         );
 
+        // 尝试获取后台预塑形的文本缓冲区
+        let ready = self.frame_pipeline.as_ref().and_then(|p| p.try_get_ready());
+        let shaped_buffers = ready.as_ref().and_then(|r| r.shaped_text_buffers.as_ref());
+
         self.text_buffers.clear();
-        for t in &self.renderer.texts {
-            let mut buffer = glyphon::Buffer::new(
-                &mut self.font_system,
-                glyphon::Metrics::new(t.font_size as f32, (t.font_size as f32) * 1.2),
-            );
-            buffer.set_size(Some(t.w as f32), Some(t.h as f32));
-            buffer.set_text(
-                &t.text,
-                &glyphon::Attrs::new().color(glyphon::Color::rgb(t.color.0, t.color.1, t.color.2)),
-                glyphon::Shaping::Advanced,
-                Some(glyphon::cosmic_text::Align::Center),
-            );
-            buffer.shape_until_scroll(&mut self.font_system, false);
-            self.text_buffers.push(buffer);
+        if let Some(buffers) = shaped_buffers {
+            // 使用后台预塑形结果（零 CPU 开销）
+            self.text_buffers = buffers.clone();
+        } else {
+            // 回退：同步塑形（首帧或管线尚未就绪时）
+            for t in &dl.texts {
+                let mut buffer = glyphon::Buffer::new(
+                    &mut self.font_system,
+                    glyphon::Metrics::new(t.font_size as f32, (t.font_size as f32) * 1.2),
+                );
+                buffer.set_size(Some(t.w as f32), Some(t.h as f32));
+                buffer.set_text(
+                    &t.text,
+                    &glyphon::Attrs::new().color(glyphon::Color::rgb(
+                        t.color.0, t.color.1, t.color.2,
+                    )),
+                    glyphon::Shaping::Advanced,
+                    Some(glyphon::cosmic_text::Align::Center),
+                );
+                buffer.shape_until_scroll(&mut self.font_system, false);
+                self.text_buffers.push(buffer);
+            }
         }
 
-        let text_areas: Vec<glyphon::TextArea> = self
-            .renderer
+        // 发送文本数据给后台管线，为下一帧预塑形
+        if let Some(ref pipeline) = self.frame_pipeline {
+            pipeline.request_prepare(crate::renderer::FramePrepData {
+                screen_w: wgpu.config.width,
+                screen_h: wgpu.config.height,
+                texts: dl.texts.clone(),
+            });
+        }
+
+        let text_areas: Vec<glyphon::TextArea> = dl
             .texts
             .iter()
             .zip(self.text_buffers.iter())
@@ -181,11 +211,14 @@ impl Application {
             return;
         }
 
-        // 更新相机
+        // 5. 更新相机
         let elapsed = wgpu.start_time.elapsed().as_secs_f32();
         wgpu.update_camera(elapsed);
 
-        // 渲染通道 —— 全部委托给 WgpuRenderer
+        // 6. Compute passes
+        wgpu.run_compute_passes(&mut encoder, &dl.compute_draws);
+
+        // 7. 渲染通道
         {
             let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
@@ -216,18 +249,17 @@ impl Application {
                 multiview_mask: None,
             });
 
-            // draw_rects / draw_images 只需 &self，draw_custom 需要 &mut self
-            let wgpu_ref = self.wgpu.as_mut().unwrap();
-            wgpu_ref.draw_rects(&mut rp, &self.renderer.rects);
-            wgpu_ref.draw_images(&mut rp, &self.renderer.images);
-            wgpu_ref.draw_custom(&mut rp, &self.renderer.custom_draws);
+            wgpu.draw_rects(&mut rp, &dl.rects);
+            wgpu.draw_images(&mut rp, &dl.images);
+            wgpu.draw_display(&mut rp, &dl.compute_draws);
+            wgpu.draw_custom(&mut rp, &dl.custom_draws);
 
             if let Err(e) = text_renderer.render(atlas, &viewport, &mut rp) {
                 eprintln!("glyphon render error: {:?}", e);
             }
         }
 
-        let wgpu = self.wgpu.as_ref().unwrap();
+        // 8. 提交 + 呈现
         wgpu.queue.submit(Some(encoder.finish()));
         wgpu.queue.present(output);
     }
@@ -270,6 +302,9 @@ impl ApplicationHandler for Application {
         self.text_atlas = Some(atlas);
         self.text_renderer = Some(text_renderer);
         self.wgpu = Some(wgpu);
+
+        // 初始化异步帧管线：后台线程独立塑形文本
+        self.frame_pipeline = Some(FramePipeline::new(&self.rt_handle));
 
         event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
         self.window.as_ref().unwrap().request_redraw();

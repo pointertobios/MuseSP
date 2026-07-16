@@ -57,6 +57,42 @@ pub struct DrawRendererCanvas {
     pub snapshot: RenderSnapshot,
 }
 
+// ── Compute 管线类型 ───────────────────────────────────────────────
+
+/// 一帧 compute 渲染所需的数据快照。
+#[derive(Clone)]
+pub struct ComputeSnapshot {
+    /// 顶点缓冲区（Vertex { position: vec3, color: vec4 }）
+    pub vertex_data: Vec<u8>,
+    /// 索引缓冲区（每 3 个 u32 = 1 个三角形，顺序任意）
+    pub indices: Vec<u32>,
+    /// Uniform 数据（Params { view_proj, time, triangle_count, screen_w, screen_h }）
+    pub uniform_data: Vec<u8>,
+    /// 顶点总数
+    pub vertex_count: u32,
+    /// 三角形总数
+    pub triangle_count: u32,
+}
+
+impl ComputeSnapshot {
+    pub fn empty() -> Self {
+        ComputeSnapshot {
+            vertex_data: Vec::new(),
+            indices: Vec::new(),
+            uniform_data: Vec::new(),
+            vertex_count: 0,
+            triangle_count: 0,
+        }
+    }
+}
+
+/// Compute 管线绘制命令。
+pub struct DrawCompute {
+    pub compute_wgsl: String,
+    pub display_wgsl: String,
+    pub snapshot: ComputeSnapshot,
+}
+
 #[derive(Debug, Clone)]
 pub struct DrawRect {
     pub x: i32,

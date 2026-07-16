@@ -1,11 +1,12 @@
 use crate::components::image::ImageData;
-use super::types::{DrawImage, DrawRect, DrawRendererCanvas, DrawText, RenderSnapshot, VertexLayoutDesc};
+use super::types::{ComputeSnapshot, DrawCompute, DrawImage, DrawRect, DrawRendererCanvas, DrawText, RenderSnapshot, VertexLayoutDesc};
 
 pub struct UIRenderer {
     pub rects: Vec<DrawRect>,
     pub texts: Vec<DrawText>,
     pub images: Vec<DrawImage>,
     pub custom_draws: Vec<DrawRendererCanvas>,
+    pub compute_draws: Vec<DrawCompute>,
     clip_stack: Vec<(i32, i32, i32, i32)>,
 }
 
@@ -16,6 +17,7 @@ impl UIRenderer {
             texts: Vec::new(),
             images: Vec::new(),
             custom_draws: Vec::new(),
+            compute_draws: Vec::new(),
             clip_stack: Vec::new(),
         }
     }
@@ -25,6 +27,7 @@ impl UIRenderer {
         self.texts.clear();
         self.images.clear();
         self.custom_draws.clear();
+        self.compute_draws.clear();
         self.clip_stack.clear();
     }
 
@@ -102,6 +105,20 @@ impl UIRenderer {
             clip_rect: self.current_clip(),
             shader_wgsl: shader_wgsl.to_string(),
             vertex_layout: vertex_layout.clone(),
+            snapshot: snapshot.clone(),
+        });
+    }
+
+    /// 添加 compute 管线绘制命令。
+    pub fn draw_compute(
+        &mut self,
+        compute_wgsl: &str,
+        display_wgsl: &str,
+        snapshot: &ComputeSnapshot,
+    ) {
+        self.compute_draws.push(DrawCompute {
+            compute_wgsl: compute_wgsl.to_string(),
+            display_wgsl: display_wgsl.to_string(),
             snapshot: snapshot.clone(),
         });
     }

@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 use winit::event::WindowEvent;
 
 use crate::components::core::ComponentBase;
-use crate::renderer::UIRenderer;
+use crate::renderer::{DrawCompute, UIRenderer};
 use musesp_config::config::Config;
 
 pub use crate::application::RunMode;
@@ -19,6 +19,8 @@ pub struct Page {
     pub root: ComponentBase,
     pub should_exit: Option<Arc<AtomicBool>>,
     pub nav: Option<mpsc::Sender<NavAction>>,
+    /// 可选：每帧生成 compute 绘制命令的回调（参数：screen_w, screen_h）。
+    pub compute_draw_fn: Option<Box<dyn Fn(u32, u32) -> Vec<DrawCompute> + Send>>,
 }
 
 pub struct PageToken {
@@ -45,6 +47,7 @@ impl Page {
             root: ComponentBase::new(0, 0, 0, 0),
             should_exit: None,
             nav: None,
+            compute_draw_fn: None,
         }
     }
 
@@ -79,7 +82,10 @@ impl Page {
         self.root.dispatch_event(event).await;
     }
 
-    pub fn draw(&self, renderer: &mut UIRenderer) {
+    pub fn draw(&self, renderer: &mut UIRenderer, screen_w: u32, screen_h: u32) {
+        if let Some(ref f) = self.compute_draw_fn {
+            renderer.compute_draws.extend(f(screen_w, screen_h));
+        }
         for child in &self.root.children {
             child.draw(renderer, self.root.x, self.root.y);
         }
@@ -111,8 +117,8 @@ pub trait AnyPage: Any + Send {
     async fn dispatch_event(&mut self, event: &WindowEvent) {
         self.page_mut().dispatch_event(event).await;
     }
-    fn draw(&self, renderer: &mut UIRenderer) {
-        self.page().draw(renderer);
+    fn draw(&self, renderer: &mut UIRenderer, screen_w: u32, screen_h: u32) {
+        self.page().draw(renderer, screen_w, screen_h);
     }
     fn draw_debug(&self, renderer: &mut UIRenderer, config: &Config) {
         self.page().draw_debug(renderer, config);
@@ -308,7 +314,7 @@ impl Router {
         }
         for i in start..self.stack.len() {
             let (page, _) = &self.stack[i];
-            page.draw(renderer);
+            page.draw(renderer, self.win_w as u32, self.win_h as u32);
             page.draw_debug(renderer, config);
         }
     }

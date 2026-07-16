@@ -1,18 +1,25 @@
+use std::sync::Arc;
+
 use musesp_ui::components::core::Constraintable;
 use musesp_ui::components::image_button::ImageButton;
-use musesp_ui::components::renderer_canvas::RendererCanvas;
-use musesp_ui::components::VertexLayoutDesc;
+use musesp_ui::renderer::DrawCompute;
 use musesp_ui::router::{AnyPage, NavAction, Page};
 
+use crate::gameplay::renderer3d::{self, AsyncSnapshotProducer};
 use crate::menu_page::MenuPage;
 
 pub struct GameplayPage {
     pub page: Page,
+    /// 保持后台任务存活
+    _producer: Option<Arc<AsyncSnapshotProducer>>,
 }
 
 impl GameplayPage {
     pub fn new() -> Self {
-        GameplayPage { page: Page::new() }
+        GameplayPage {
+            page: Page::new(),
+            _producer: None,
+        }
     }
 }
 
@@ -35,50 +42,23 @@ impl AnyPage for GameplayPage {
     fn on_activate(&mut self) {}
 
     async fn build(&mut self) {
-        // 顶点着色器：简单的 2D 位置 → NDC 变换
-        let shader = r#"
-struct VertexInput {
-    @location(0) pos: vec2<f32>,
-    @location(1) color: vec4<f32>,
-}
+        // 启动异步快照生产者并注册为全局单例
+        let producer = Arc::new(AsyncSnapshotProducer::new());
+        renderer3d::set_snapshot_producer(Arc::clone(&producer));
+        self._producer = Some(producer);
 
-struct VertexOutput {
-    @builtin(position) position: vec4<f32>,
-    @location(0) color: vec4<f32>,
-}
+        // compute_draw_fn：通过全局单例无阻塞读取预计算结果
+        let compute_wgsl = include_str!("gameplay/shader_compute.wgsl").to_string();
+        let display_wgsl = include_str!("gameplay/display_compute.wgsl").to_string();
 
-@vertex
-fn vs_main(in: VertexInput) -> VertexOutput {
-    return VertexOutput(vec4<f32>(in.pos, 0.0, 1.0), in.color);
-}
-
-@fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    return in.color;
-}
-"#;
-
-        let layout = VertexLayoutDesc {
-            array_stride: 24,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: vec![
-                wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32x2,
-                    offset: 0,
-                    shader_location: 0,
-                },
-                wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32x4,
-                    offset: 8,
-                    shader_location: 1,
-                },
-            ],
-        };
-
-        let (mut canvas, _sender) = RendererCanvas::new(shader, layout, 0, 0, 0, 0);
-        canvas.base.h_constraint = Constraintable::Maximum;
-        canvas.base.v_constraint = Constraintable::Maximum;
-        self.page.root.children.push(canvas);
+        self.page.compute_draw_fn = Some(Box::new(move |screen_w: u32, screen_h: u32| {
+            let snap = renderer3d::latest_snapshot(screen_w, screen_h);
+            vec![DrawCompute {
+                compute_wgsl: compute_wgsl.clone(),
+                display_wgsl: display_wgsl.clone(),
+                snapshot: snap,
+            }]
+        }));
 
         let nav = self.page.nav.clone().unwrap();
         let mut btn = ImageButton::new("assets/ui/menu_button.svg", "", 16, 16, 44, 44, 18).await;
@@ -106,7 +86,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             if key_event.state == ElementState::Pressed
                 && key_event.physical_key == PhysicalKey::Code(KeyCode::Escape)
             {
-                // 模拟菜单按钮鼠标点击（对齐 Python: 创建 dummy event 并 emit 到按钮）
                 if let Some(btn) = self.page.root.find_by_name_mut("menu_btn") {
                     btn.emit("mouse_click", None).await;
                 }
