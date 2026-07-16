@@ -1,4 +1,5 @@
 ﻿mod gameplay_page;
+mod gameplay;
 mod menu_page;
 mod pages;
 
