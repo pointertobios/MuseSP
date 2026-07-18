@@ -4,7 +4,12 @@ use crate::components::core::{ComponentBase, ComponentTrait};
 use crate::renderer::UIRenderer;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ImageMode { Cover, Centered, KeepRate, Origin }
+pub enum ImageMode {
+    Cover,
+    Centered,
+    KeepRate,
+    Origin,
+}
 
 /// 已加载的图片 RGBA 数据
 #[derive(Clone)]
@@ -24,9 +29,23 @@ pub struct Image {
 }
 
 impl Image {
-    pub async fn new(path: &str, x: i32, y: i32, width: i32, height: i32, h_mode: ImageMode, v_mode: ImageMode) -> Box<Self> {
+    pub async fn new(
+        path: &str,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+        h_mode: ImageMode,
+        v_mode: ImageMode,
+    ) -> Box<Self> {
         let image_data = Self::load_image(path).await;
-        Box::new(Image { base: ComponentBase::new(x, y, width, height), path: path.to_string(), h_mode, v_mode, image_data })
+        Box::new(Image {
+            base: ComponentBase::new(x, y, width, height),
+            path: path.to_string(),
+            h_mode,
+            v_mode,
+            image_data,
+        })
     }
 
     pub async fn set_image(&mut self, path: &str) {
@@ -48,7 +67,11 @@ impl Image {
             .ok()?;
         let rgba = img.into_rgba8();
         let (w, h) = rgba.dimensions();
-        Some(ImageData { rgba: rgba.into_raw(), width: w, height: h })
+        Some(ImageData {
+            rgba: rgba.into_raw(),
+            width: w,
+            height: h,
+        })
     }
 
     async fn load_svg(path: &str) -> Option<ImageData> {
@@ -67,7 +90,11 @@ impl Image {
             tiny_skia::Transform::from_scale(scale, scale),
             &mut pixmap.as_mut(),
         );
-        Some(ImageData { rgba: pixmap.take(), width: w, height: h })
+        Some(ImageData {
+            rgba: pixmap.take(),
+            width: w,
+            height: h,
+        })
     }
 
     /// 对齐 Python `_display_size`：根据 h_mode / v_mode 计算实际显示尺寸
@@ -109,8 +136,12 @@ impl Image {
 
 #[async_trait]
 impl ComponentTrait for Image {
-    fn base(&self) -> &ComponentBase { &self.base }
-    fn base_mut(&mut self) -> &mut ComponentBase { &mut self.base }
+    fn base(&self) -> &ComponentBase {
+        &self.base
+    }
+    fn base_mut(&mut self) -> &mut ComponentBase {
+        &mut self.base
+    }
 
     fn draw_self(&self, renderer: &mut UIRenderer, draw_x: i32, draw_y: i32) {
         let (iw, ih) = match &self.image_data {

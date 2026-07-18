@@ -1,7 +1,7 @@
 use std::any::Any;
 use std::cell::Cell;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 
@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 use winit::event::WindowEvent;
 
 use crate::components::core::ComponentBase;
-use crate::renderer::{DrawCompute, DrawComputeLines, DrawLines, DrawSubdivideAndRender, UIRenderer};
+use crate::renderer::{RenderPipeline, UIRenderer};
 use musesp_config::config::Config;
 use musesp_config::shader_library::ShaderLibrary;
 
@@ -20,14 +20,8 @@ pub struct Page {
     pub root: ComponentBase,
     pub should_exit: Option<Arc<AtomicBool>>,
     pub nav: Option<mpsc::Sender<NavAction>>,
-    /// 可选：每帧生成 compute 绘制命令的回调（参数：screen_w, screen_h）。
-    pub compute_draw_fn: Option<Box<dyn Fn(u32, u32) -> Vec<DrawCompute> + Send>>,
-    /// 可选：每帧生成 Subdivide→Render 绘制命令的回调。
-    pub subdivide_render_fn: Option<Box<dyn Fn(u32, u32) -> Vec<DrawSubdivideAndRender> + Send>>,
-    /// 可选：每帧生成 3D 直线绘制命令的回调。
-    pub line_draw_fn: Option<Box<dyn Fn(u32, u32) -> Vec<DrawLines> + Send>>,
-    /// 可选：每帧生成 Compute Lines（GPU 线段细分 + 渲染）的回调。
-    pub compute_lines_fn: Option<Box<dyn Fn(u32, u32) -> Vec<DrawComputeLines> + Send>>,
+    /// 可选：自定义渲染管线（compute shader、3D 渲染等由 gameplay 层实现）。
+    pub render_pipeline: Option<Box<dyn RenderPipeline + 'static>>,
     /// 预编译的 shader 模块库。
     pub shader_library: Option<Arc<ShaderLibrary>>,
 }
@@ -56,10 +50,7 @@ impl Page {
             root: ComponentBase::new(0, 0, 0, 0),
             should_exit: None,
             nav: None,
-            compute_draw_fn: None,
-            subdivide_render_fn: None,
-            line_draw_fn: None,
-            compute_lines_fn: None,
+            render_pipeline: None,
             shader_library: None,
         }
     }
@@ -95,19 +86,9 @@ impl Page {
         self.root.dispatch_event(event).await;
     }
 
-    pub fn draw(&self, renderer: &mut UIRenderer, screen_w: u32, screen_h: u32) {
-        if let Some(ref f) = self.compute_draw_fn {
-            renderer.compute_draws.extend(f(screen_w, screen_h));
-        }
-        if let Some(ref f) = self.subdivide_render_fn {
-            renderer.subdivide_renders.extend(f(screen_w, screen_h));
-        }
-        if let Some(ref f) = self.line_draw_fn {
-            renderer.line_draws.extend(f(screen_w, screen_h));
-        }
-        if let Some(ref f) = self.compute_lines_fn {
-            renderer.compute_lines.extend(f(screen_w, screen_h));
-        }
+    pub fn draw(&self, renderer: &mut UIRenderer, _screen_w: u32, _screen_h: u32) {
+        // 自定义渲染管线由 Application 层通过 RenderPipeline trait 调用，
+        // 不在此处处理（这里只绘制 UI 组件树）。
         for child in &self.root.children {
             child.draw(renderer, self.root.x, self.root.y);
         }
@@ -330,6 +311,18 @@ impl Router {
                 }
             }
         }
+    }
+
+    /// 获取活跃页面的 RenderPipeline 的可变引用（用于 compute pass）。
+    pub fn get_render_pipeline_mut(&mut self) -> Option<&mut (dyn RenderPipeline + 'static)> {
+        let (page, _) = self.stack.last_mut()?;
+        page.page_mut().render_pipeline.as_mut().map(|b| b.as_mut())
+    }
+
+    /// 获取活跃页面的 RenderPipeline 的不可变引用（用于 render pass）。
+    pub fn get_render_pipeline(&self) -> Option<&(dyn RenderPipeline + 'static)> {
+        let (page, _) = self.stack.last()?;
+        page.page().render_pipeline.as_ref().map(|b| b.as_ref())
     }
 
     pub fn draw_pages(&self, renderer: &mut UIRenderer, config: &Config) {

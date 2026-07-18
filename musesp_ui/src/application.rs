@@ -11,7 +11,6 @@ use winit::window::Window;
 use crate::renderer::{FrameDrawList, FramePipeline, UIRenderer, WgpuRenderer};
 use crate::router::{AnyPage, PageToken, Router};
 use musesp_config::config::Config;
-use musesp_config::shader_library::ShaderLibrary;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunMode {
@@ -154,9 +153,8 @@ impl Application {
                 buffer.set_size(Some(t.w as f32), Some(t.h as f32));
                 buffer.set_text(
                     &t.text,
-                    &glyphon::Attrs::new().color(glyphon::Color::rgb(
-                        t.color.0, t.color.1, t.color.2,
-                    )),
+                    &glyphon::Attrs::new()
+                        .color(glyphon::Color::rgb(t.color.0, t.color.1, t.color.2)),
                     glyphon::Shaping::Advanced,
                     Some(glyphon::cosmic_text::Align::Center),
                 );
@@ -216,9 +214,20 @@ impl Application {
         let elapsed = wgpu.start_time.elapsed().as_secs_f32();
         wgpu.update_camera(elapsed);
 
-        // 6. Compute passes
-        wgpu.run_adaptive_subdivide(&mut encoder, &dl.subdivide_renders);
-        wgpu.compute_line_subdivide(&mut encoder, &dl.compute_lines);
+        // 6. 自定义 compute passes（由 gameplay 层通过 RenderPipeline trait 注入）
+        {
+            let router = self.router.as_ref().unwrap();
+            let mut router_ref = router.borrow_mut();
+            if let Some(pipeline) = router_ref.get_render_pipeline_mut() {
+                pipeline.record_compute(
+                    &wgpu.device,
+                    &wgpu.queue,
+                    &mut encoder,
+                    &wgpu.config,
+                    wgpu.sample_count,
+                );
+            }
+        }
 
         // 7. 渲染通道（渲染到 MSAA 目标，自动 resolve 到 surface）
         {
@@ -251,13 +260,25 @@ impl Application {
                 multiview_mask: None,
             });
 
+            // UI 元素（rect、image、custom canvas）
             wgpu.draw_rects(&mut rp, &dl.rects);
             wgpu.draw_images(&mut rp, &dl.images);
-            wgpu.draw_display(&mut rp, &dl.compute_draws);
-            wgpu.draw_subdivided(&mut rp, &dl.subdivide_renders);
-            wgpu.draw_lines(&mut rp, &dl.line_draws);
-            wgpu.draw_compute_lines(&mut rp, &dl.compute_lines);
             wgpu.draw_custom(&mut rp, &dl.custom_draws);
+
+            // 自定义渲染管线（gameplay 层在 UI 之后绘制，可写深度）
+            {
+                let router = self.router.as_ref().unwrap();
+                let router_ref = router.borrow();
+                if let Some(pipeline) = router_ref.get_render_pipeline() {
+                    pipeline.record_render(
+                        &wgpu.device,
+                        &wgpu.queue,
+                        &mut rp,
+                        &wgpu.config,
+                        wgpu.sample_count,
+                    );
+                }
+            }
 
             if let Err(e) = text_renderer.render(atlas, &viewport, &mut rp) {
                 eprintln!("glyphon render error: {:?}", e);
@@ -286,10 +307,12 @@ impl ApplicationHandler for Application {
         self.init_router(size.width as i32, size.height as i32);
         let wgpu = self.rt_handle.block_on(WgpuRenderer::new(window.clone()));
 
-        // 预编译所有 shader
-        let shader_library = Arc::new(ShaderLibrary::new(&wgpu.device));
+        // ShaderLibrary 已由 WgpuRenderer 在初始化时一并创建，此处共享给 Router
+        let shader_library = wgpu.shader_library.clone();
         if let Some(router) = &self.router {
-            router.borrow_mut().set_shader_library(Some(shader_library.clone()));
+            router
+                .borrow_mut()
+                .set_shader_library(Some(shader_library));
         }
 
         let format = wgpu.config.format;
@@ -368,7 +391,8 @@ impl ApplicationHandler for Application {
             | WindowEvent::MouseWheel { .. }
             | WindowEvent::KeyboardInput { .. } => {
                 if let Some(ref router) = self.router {
-                    self.rt_handle.block_on(router.borrow_mut().dispatch_event(&event));
+                    self.rt_handle
+                        .block_on(router.borrow_mut().dispatch_event(&event));
                     if self.should_exit.load(Ordering::Relaxed) {
                         event_loop.exit();
                         return;

@@ -130,7 +130,10 @@ impl ComponentTrait for ScrollList {
                     return true;
                 }
             }
-            WindowEvent::CursorMoved { device_id, position } => {
+            WindowEvent::CursorMoved {
+                device_id,
+                position,
+            } => {
                 let (lx, ly) = self.base.local_pos(position.x, position.y);
                 if !self.base.handle_mouse_move(lx, ly, event).await {
                     return false;
@@ -170,7 +173,11 @@ impl ComponentTrait for ScrollList {
                     }
                 }
 
-                if !self.base.handle_mouse_input(*state, *button, lx, ly, event).await {
+                if !self
+                    .base
+                    .handle_mouse_input(*state, *button, lx, ly, event)
+                    .await
+                {
                     return false;
                 }
                 return self.dispatch_to_visible_children(event).await;

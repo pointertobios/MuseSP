@@ -1,5 +1,5 @@
-﻿mod gameplay_page;
 mod gameplay;
+mod gameplay_page;
 mod menu_page;
 mod pages;
 

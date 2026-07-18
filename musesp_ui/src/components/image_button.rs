@@ -1,11 +1,13 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use winit::event::WindowEvent;
 
 use async_trait::async_trait;
 
-use crate::components::core::{ComponentBase, ComponentTrait, Constraintable, Direction, EventHandler};
+use crate::components::core::{
+    ComponentBase, ComponentTrait, Constraintable, Direction, EventHandler,
+};
 use crate::components::image::{Image, ImageMode};
 use crate::components::label::Label;
 use crate::renderer::UIRenderer;

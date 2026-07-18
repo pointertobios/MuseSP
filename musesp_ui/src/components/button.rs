@@ -1,11 +1,13 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use winit::event::WindowEvent;
 
 use async_trait::async_trait;
 
-use crate::components::core::{ComponentBase, ComponentTrait, Constraintable, Direction, EventHandler};
+use crate::components::core::{
+    ComponentBase, ComponentTrait, Constraintable, Direction, EventHandler,
+};
 use crate::components::label::Label;
 use crate::renderer::UIRenderer;
 
@@ -17,14 +19,7 @@ pub struct Button {
 }
 
 impl Button {
-    pub fn new(
-        text: &str,
-        x: i32,
-        y: i32,
-        width: i32,
-        height: i32,
-        font_size: u32,
-    ) -> Box<Self> {
+    pub fn new(text: &str, x: i32, y: i32, width: i32, height: i32, font_size: u32) -> Box<Self> {
         let mut base = ComponentBase::new(x, y, width, height);
         base.layout_direction = Direction::Vertical;
         let label = Label::new(text, 0, 0, 0, 0, font_size, (255, 255, 255));
@@ -88,13 +83,7 @@ impl ComponentTrait for Button {
         };
         renderer.draw_rect(dx, dy, self.base.width, self.base.height, bg);
         if !self.enabled.load(Ordering::Relaxed) {
-            renderer.draw_rect(
-                dx,
-                dy,
-                self.base.width,
-                self.base.height,
-                (0, 0, 0, 128),
-            );
+            renderer.draw_rect(dx, dy, self.base.width, self.base.height, (0, 0, 0, 128));
         }
     }
 

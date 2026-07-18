@@ -1,15 +1,13 @@
+use super::types::{
+    DrawImage, DrawRect, DrawRendererCanvas, DrawText, RenderSnapshot, VertexLayoutDesc,
+};
 use crate::components::image::ImageData;
-use super::types::{ComputeBindingMode, ComputeSnapshot, DrawCompute, DrawComputeLines, DrawImage, DrawLines, DrawRect, DrawRendererCanvas, DrawSubdivideAndRender, DrawText, RenderSnapshot, VertexLayoutDesc};
 
 pub struct UIRenderer {
     pub rects: Vec<DrawRect>,
     pub texts: Vec<DrawText>,
     pub images: Vec<DrawImage>,
     pub custom_draws: Vec<DrawRendererCanvas>,
-    pub compute_draws: Vec<DrawCompute>,
-    pub subdivide_renders: Vec<DrawSubdivideAndRender>,
-    pub compute_lines: Vec<DrawComputeLines>,
-    pub line_draws: Vec<DrawLines>,
     clip_stack: Vec<(i32, i32, i32, i32)>,
 }
 
@@ -20,10 +18,6 @@ impl UIRenderer {
             texts: Vec::new(),
             images: Vec::new(),
             custom_draws: Vec::new(),
-            compute_draws: Vec::new(),
-            subdivide_renders: Vec::new(),
-            compute_lines: Vec::new(),
-            line_draws: Vec::new(),
             clip_stack: Vec::new(),
         }
     }
@@ -33,16 +27,17 @@ impl UIRenderer {
         self.texts.clear();
         self.images.clear();
         self.custom_draws.clear();
-        self.compute_draws.clear();
-        self.subdivide_renders.clear();
-        self.compute_lines.clear();
-        self.line_draws.clear();
         self.clip_stack.clear();
     }
 
     fn current_clip(&self) -> Option<(u32, u32, u32, u32)> {
         self.clip_stack.last().map(|&(x, y, w, h)| {
-            (x.max(0) as u32, y.max(0) as u32, w.max(0) as u32, h.max(0) as u32)
+            (
+                x.max(0) as u32,
+                y.max(0) as u32,
+                w.max(0) as u32,
+                h.max(0) as u32,
+            )
         })
     }
 
@@ -64,7 +59,14 @@ impl UIRenderer {
     }
 
     pub fn draw_rect(&mut self, x: i32, y: i32, w: i32, h: i32, color: (u8, u8, u8, u8)) {
-        self.rects.push(DrawRect { x, y, w, h, color, clip_rect: self.current_clip() });
+        self.rects.push(DrawRect {
+            x,
+            y,
+            w,
+            h,
+            color,
+            clip_rect: self.current_clip(),
+        });
     }
 
     pub fn draw_text(
@@ -91,7 +93,14 @@ impl UIRenderer {
 
     pub fn draw_image(&mut self, x: i32, y: i32, w: i32, h: i32, data: Option<&ImageData>) {
         if let Some(d) = data {
-            self.images.push(DrawImage { x, y, w, h, data: d.clone(), clip_rect: self.current_clip() });
+            self.images.push(DrawImage {
+                x,
+                y,
+                w,
+                h,
+                data: d.clone(),
+                clip_rect: self.current_clip(),
+            });
         }
     }
 
@@ -115,21 +124,6 @@ impl UIRenderer {
             shader_wgsl: shader_wgsl.to_string(),
             vertex_layout: vertex_layout.clone(),
             snapshot: snapshot.clone(),
-        });
-    }
-
-    /// 添加 compute 管线绘制命令。
-    pub fn draw_compute(
-        &mut self,
-        compute_wgsl: &str,
-        display_wgsl: &str,
-        snapshot: &ComputeSnapshot,
-    ) {
-        self.compute_draws.push(DrawCompute {
-            compute_wgsl: compute_wgsl.to_string(),
-            display_wgsl: display_wgsl.to_string(),
-            snapshot: snapshot.clone(),
-            binding_mode: ComputeBindingMode::Standard,
         });
     }
 }

@@ -1,4 +1,4 @@
-﻿use std::collections::HashMap;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -46,7 +46,10 @@ struct MusicListItem {
 
 impl MusicListItem {
     fn new(
-        x: i32, y: i32, width: i32, height: i32,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
         item_id: String,
         name: String,
         author: String,
@@ -54,17 +57,26 @@ impl MusicListItem {
     ) -> Box<Self> {
         let mut base = ComponentBase::new(x, y, width, height);
         base.item_id = Some(item_id);
-        Box::new(MusicListItem { base, name, author, selected_item_id })
+        Box::new(MusicListItem {
+            base,
+            name,
+            author,
+            selected_item_id,
+        })
     }
 }
 
 impl ComponentTrait for MusicListItem {
-    fn base(&self) -> &ComponentBase { &self.base }
-    fn base_mut(&mut self) -> &mut ComponentBase { &mut self.base }
+    fn base(&self) -> &ComponentBase {
+        &self.base
+    }
+    fn base_mut(&mut self) -> &mut ComponentBase {
+        &mut self.base
+    }
 
     fn draw_self(&self, renderer: &mut UIRenderer, dx: i32, dy: i32) {
-        let is_selected = self.selected_item_id.blocking_lock().as_deref()
-            == self.base.item_id.as_deref();
+        let is_selected =
+            self.selected_item_id.blocking_lock().as_deref() == self.base.item_id.as_deref();
 
         let (name_size, name_color, author_color): (u32, (u8, u8, u8), (u8, u8, u8)) =
             if is_selected {
@@ -79,12 +91,27 @@ impl ComponentTrait for MusicListItem {
             };
 
         // Name label: y=4, height=24
-        renderer.draw_text(&self.name, dx, dy + 4, self.base.width, 24, name_size, name_color);
+        renderer.draw_text(
+            &self.name,
+            dx,
+            dy + 4,
+            self.base.width,
+            24,
+            name_size,
+            name_color,
+        );
         // Author label: y=28, height=20
-        renderer.draw_text(&self.author, dx, dy + 28, self.base.width, 20, 14, author_color);
+        renderer.draw_text(
+            &self.author,
+            dx,
+            dy + 28,
+            self.base.width,
+            20,
+            14,
+            author_color,
+        );
     }
 }
-
 
 impl MusicListPage {
     pub fn new() -> Self {
@@ -123,14 +150,17 @@ impl AnyPage for MusicListPage {
 
         let nav = self.page.nav.clone().unwrap();
 
-        let mut back_btn = ImageButton::new("assets/ui/return_button.svg", "", 16, 16, 44, 44, 18).await;
+        let mut back_btn =
+            ImageButton::new("assets/ui/return_button.svg", "", 16, 16, 44, 44, 18).await;
         back_btn.base.h_constraint = Constraintable::None;
         back_btn.base.v_constraint = Constraintable::None;
         let n = nav.clone();
         back_btn.base.bind_mouse_click(Box::new(move |_| {
             let n = n.clone();
             Box::pin(async move {
-                let _ = n.send(NavAction::PopThenElse(Box::new(HomePage::new()))).await;
+                let _ = n
+                    .send(NavAction::PopThenElse(Box::new(HomePage::new())))
+                    .await;
                 false
             })
         }));
@@ -202,9 +232,7 @@ impl AnyPage for MusicListPage {
         diff_row.name = Some("diff_row".into());
         // Python: diff_row 初始为空，难度按钮在 _on_music_select 中动态创建
 
-        detail
-            .children
-            .push(Box::new(diff_row));
+        detail.children.push(Box::new(diff_row));
 
         let mut g2 = Spacer::new(0, 8);
         g2.base.v_constraint = Constraintable::Minimum;
@@ -226,7 +254,9 @@ impl AnyPage for MusicListPage {
                 if inner.lock().await.selected_level.is_none() {
                     return false;
                 }
-                let _ = nav.send(NavAction::ClearAndPush(Box::new(GameplayPage::new()))).await;
+                let _ = nav
+                    .send(NavAction::ClearAndPush(Box::new(GameplayPage::new())))
+                    .await;
                 false
             })
         }));
@@ -242,10 +272,7 @@ impl AnyPage for MusicListPage {
         sl.base.h_constraint = Constraintable::Maximum;
         sl.base.v_constraint = Constraintable::Minimum;
         self.page.root.children.push(sl);
-        self.page
-            .root
-            .children
-            .push(Box::new(content));
+        self.page.root.children.push(Box::new(content));
         let mut sr = Spacer::new(0, 0);
         sr.base.name = Some("spacer_right".into());
         sr.base.h_constraint = Constraintable::Maximum;
@@ -344,11 +371,12 @@ impl MusicListPage {
                     .music_sources
                     .insert(item_id.clone(), base.join(subdir));
 
-                let selected_id = {
-                    self.inner.lock().await.selected_item_id.clone()
-                };
+                let selected_id = { self.inner.lock().await.selected_item_id.clone() };
                 let item = MusicListItem::new(
-                    0, 0, 280, 52,
+                    0,
+                    0,
+                    280,
+                    52,
                     item_id,
                     name.to_string(),
                     author.to_string(),
@@ -363,7 +391,11 @@ impl MusicListPage {
     }
 
     async fn resolve_list_file(&mut self, base: &PathBuf) -> Option<PathBuf> {
-        if tokio::fs::metadata(base).await.map(|m| m.is_dir()).unwrap_or(false) {
+        if tokio::fs::metadata(base)
+            .await
+            .map(|m| m.is_dir())
+            .unwrap_or(false)
+        {
             let f = base.join("list.txt");
             if tokio::fs::metadata(&f).await.is_ok() {
                 return Some(f);
@@ -380,7 +412,11 @@ impl MusicListPage {
                 None => return,
             }
         };
-        if !tokio::fs::metadata(&src).await.map(|m| m.is_dir()).unwrap_or(false) {
+        if !tokio::fs::metadata(&src)
+            .await
+            .map(|m| m.is_dir())
+            .unwrap_or(false)
+        {
             return;
         }
         let meta = match self.load_meta(&src).await {

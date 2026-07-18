@@ -15,8 +15,15 @@ musesp_editor/      # 编辑器模块
 ## 构建与运行
 
 - 使用 `cargo` 构建：`cargo build` / `cargo run`
-- 添加依赖使用 `cargo add <crate> --package <target>`，**不要直接编辑 Cargo.toml**
+- **绝对禁止直接编辑任何 `Cargo.toml`**。添加依赖使用 `cargo add <crate> --package <target>`，删除依赖使用 `cargo remove <crate> --package <target>`
 - workspace resolver 为 `3`（Rust 2024 edition）
+
+## 渲染架构
+
+- `musesp_ui` 只提供最小渲染抽象（`RenderPipeline` trait），不感知 compute/graphics shader 细节
+- 业务层（`musesp`）通过实现 `RenderPipeline` trait 来自定义渲染管线
+- `WgpuRenderer` 只负责 UI 元素（rect、image、custom canvas）的渲染
+- 所有 compute shader、自适应细分、3D 渲染等实现都在 `musesp::gameplay::renderer3d` 中
 
 ## Rust 代码规范
 

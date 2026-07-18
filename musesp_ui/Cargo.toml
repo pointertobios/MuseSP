@@ -9,7 +9,7 @@ bytemuck = "1.25.1"
 glyphon = "0.12.0"
 image = "0.25.10"
 log = "0.4.33"
-musesp_config = { version = "0.1.0", path = "../musesp_config" }
+musesp_config = { path = "../musesp_config" }
 resvg = "0.47.0"
 tiny-skia = "0.12.0"
 tokio = { version = "1.52.3", features = ["full"] }

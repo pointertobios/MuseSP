@@ -2,10 +2,9 @@ use std::sync::Arc;
 
 use musesp_ui::components::core::Constraintable;
 use musesp_ui::components::image_button::ImageButton;
-use musesp_ui::renderer::{DrawComputeLines, DrawSubdivideAndRender};
 use musesp_ui::router::{AnyPage, NavAction, Page};
 
-use crate::gameplay::renderer3d::{self, AsyncSnapshotProducer};
+use crate::gameplay::renderer3d::{self, AsyncSnapshotProducer, GameplayRenderPipeline};
 use crate::menu_page::MenuPage;
 
 pub struct GameplayPage {
@@ -47,39 +46,14 @@ impl AnyPage for GameplayPage {
         renderer3d::set_snapshot_producer(Arc::clone(&producer));
         self._producer = Some(producer);
 
-        let shaders = self.page.shader_library.as_ref().expect("ShaderLibrary not set");
-
-        // 曲面：两-pass 自适应细分
-        let se = Arc::clone(shaders.get("surface_eval"));
-        let sf = Arc::clone(shaders.get("surface_final"));
-        let p2 = Arc::clone(shaders.get("surface_pass2"));
-        self.page.subdivide_render_fn = Some(Box::new(move |screen_w: u32, screen_h: u32| {
-            let snap = renderer3d::latest_snapshot(screen_w, screen_h);
-            vec![DrawSubdivideAndRender {
-                eval_module: Arc::clone(&se),
-                final_module: Arc::clone(&sf),
-                vertex_module: Arc::clone(&p2),
-                fragment_module: Arc::clone(&p2),
-                snapshot: snap,
-            }]
-        }));
-
-        // 线段：两-pass 自适应细分
-        let le = Arc::clone(shaders.get("line_eval"));
-        let lf = Arc::clone(shaders.get("line_final"));
-        let lr = Arc::clone(shaders.get("line_render"));
-        self.page.compute_lines_fn = Some(Box::new(move |sw: u32, sh: u32| {
-            let (endpoints, line_count, uniform) = renderer3d::latest_compute_lines_snapshot(sw, sh);
-            vec![DrawComputeLines {
-                eval_module: Arc::clone(&le),
-                final_module: Arc::clone(&lf),
-                vertex_module: Arc::clone(&lr),
-                fragment_module: Arc::clone(&lr),
-                endpoint_data: endpoints,
-                line_count,
-                uniform_data: uniform,
-            }]
-        }));
+        // 创建自定义渲染管线：接管所有 compute/subdivide/line 渲染
+        let shaders = self
+            .page
+            .shader_library
+            .as_ref()
+            .expect("ShaderLibrary not set");
+        self.page.render_pipeline =
+            Some(Box::new(GameplayRenderPipeline::new(Arc::clone(shaders))));
 
         let nav = self.page.nav.clone().unwrap();
         let mut btn = ImageButton::new("assets/ui/menu_button.svg", "", 16, 16, 44, 44, 18).await;

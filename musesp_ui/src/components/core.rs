@@ -24,7 +24,8 @@ pub enum Direction {
     Horizontal,
 }
 
-pub type EventHandler = Box<dyn FnMut(&WindowEvent) -> Pin<Box<dyn Future<Output = bool> + Send>> + Send>;
+pub type EventHandler =
+    Box<dyn FnMut(&WindowEvent) -> Pin<Box<dyn Future<Output = bool> + Send>> + Send>;
 
 #[async_trait]
 pub trait ComponentTrait: Any + Send {
@@ -101,8 +102,12 @@ pub struct ComponentBase {
 }
 
 impl ComponentTrait for ComponentBase {
-    fn base(&self) -> &ComponentBase { self }
-    fn base_mut(&mut self) -> &mut ComponentBase { self }
+    fn base(&self) -> &ComponentBase {
+        self
+    }
+    fn base_mut(&mut self) -> &mut ComponentBase {
+        self
+    }
 }
 
 impl ComponentBase {
@@ -293,7 +298,10 @@ impl ComponentBase {
 
     pub async fn dispatch_event(&mut self, event: &WindowEvent) -> bool {
         match event {
-            WindowEvent::CursorMoved { device_id, position } => {
+            WindowEvent::CursorMoved {
+                device_id,
+                position,
+            } => {
                 self.cursor_x = position.x;
                 self.cursor_y = position.y;
                 let (lx, ly) = self.local_pos(position.x, position.y);
@@ -314,7 +322,10 @@ impl ComponentBase {
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 let (lx, ly) = self.local_pos(self.cursor_x, self.cursor_y);
-                if !self.handle_mouse_input(*state, *button, lx, ly, event).await {
+                if !self
+                    .handle_mouse_input(*state, *button, lx, ly, event)
+                    .await
+                {
                     return false;
                 }
                 let n = self.children.len();
@@ -351,7 +362,12 @@ impl ComponentBase {
         true
     }
 
-    pub(crate) async fn handle_mouse_move(&mut self, lx: i32, ly: i32, event: &WindowEvent) -> bool {
+    pub(crate) async fn handle_mouse_move(
+        &mut self,
+        lx: i32,
+        ly: i32,
+        event: &WindowEvent,
+    ) -> bool {
         let was_hovered = self.hovered;
         self.hovered = self.in_rect(lx, ly);
         if self.hovered && !was_hovered {
@@ -397,7 +413,11 @@ impl ComponentBase {
         }
     }
 
-    pub(crate) async fn handle_keyboard(&mut self, key_event: &winit::event::KeyEvent, event: &WindowEvent) -> bool {
+    pub(crate) async fn handle_keyboard(
+        &mut self,
+        key_event: &winit::event::KeyEvent,
+        event: &WindowEvent,
+    ) -> bool {
         let PhysicalKey::Code(keycode) = key_event.physical_key else {
             return true;
         };

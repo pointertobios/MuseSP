@@ -17,7 +17,6 @@ impl HomePage {
     }
 }
 
-
 #[async_trait::async_trait]
 impl AnyPage for HomePage {
     fn page(&self) -> &Page {
@@ -66,7 +65,9 @@ impl AnyPage for HomePage {
             let n = n.clone();
             Box::pin(async move {
                 println!("[click] 开始");
-                let _ = n.send(NavAction::Push(Box::new(MusicListPage::new()))).await;
+                let _ = n
+                    .send(NavAction::Push(Box::new(MusicListPage::new())))
+                    .await;
                 false
             })
         }));
@@ -108,10 +109,7 @@ impl AnyPage for HomePage {
         spacer_left.base.h_constraint = Constraintable::Maximum;
         spacer_left.base.v_constraint = Constraintable::Minimum;
         self.page.root.children.push(spacer_left);
-        self.page
-            .root
-            .children
-            .push(Box::new(content));
+        self.page.root.children.push(Box::new(content));
         let mut spacer_right = Spacer::new(0, 0);
         spacer_right.base.h_constraint = Constraintable::Maximum;
         spacer_right.base.v_constraint = Constraintable::Minimum;

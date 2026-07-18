@@ -17,7 +17,6 @@ pub struct MenuPage {
     menu_h: i32,
 }
 
-
 impl MenuPage {
     pub fn new() -> Self {
         MenuPage {
@@ -86,8 +85,14 @@ impl AnyPage for MenuPage {
                 let n = n.clone();
                 Box::pin(async move {
                     match lbl {
-                        "取消" => { let _ = n.send(NavAction::Pop).await; }
-                        "退出" => { let _ = n.send(NavAction::ClearAndPush(Box::new(MusicListPage::new()))).await; }
+                        "取消" => {
+                            let _ = n.send(NavAction::Pop).await;
+                        }
+                        "退出" => {
+                            let _ = n
+                                .send(NavAction::ClearAndPush(Box::new(MusicListPage::new())))
+                                .await;
+                        }
                         _ => {}
                     }
                     false
@@ -100,10 +105,7 @@ impl AnyPage for MenuPage {
             s.base.min_width = 8;
             row.children.push(s);
         }
-        self.page
-            .root
-            .children
-            .push(Box::new(row));
+        self.page.root.children.push(Box::new(row));
 
         let mut bot = Spacer::new(0, 0);
         bot.base.v_constraint = Constraintable::Maximum;

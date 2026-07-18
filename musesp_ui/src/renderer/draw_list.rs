@@ -1,4 +1,4 @@
-use super::types::{DrawCompute, DrawComputeLines, DrawImage, DrawLines, DrawRect, DrawRendererCanvas, DrawSubdivideAndRender, DrawText};
+use super::types::{DrawImage, DrawRect, DrawRendererCanvas, DrawText};
 
 /// 一帧的完整绘制数据，可跨线程发送。
 ///
@@ -10,10 +10,6 @@ pub struct FrameDrawList {
     pub texts: Vec<DrawText>,
     pub images: Vec<DrawImage>,
     pub custom_draws: Vec<DrawRendererCanvas>,
-    pub compute_draws: Vec<DrawCompute>,
-    pub subdivide_renders: Vec<DrawSubdivideAndRender>,
-    pub compute_lines: Vec<DrawComputeLines>,
-    pub line_draws: Vec<DrawLines>,
     /// 后台预塑形的文本缓冲区（与 `texts` 一一对应）。
     /// 为 `None` 表示尚未塑形，渲染时需同步塑形。
     pub shaped_text_buffers: Option<Vec<glyphon::Buffer>>,
@@ -29,10 +25,6 @@ impl FrameDrawList {
         self.texts.clear();
         self.images.clear();
         self.custom_draws.clear();
-        self.compute_draws.clear();
-        self.subdivide_renders.clear();
-        self.compute_lines.clear();
-        self.line_draws.clear();
         self.shaped_text_buffers = None;
     }
 
@@ -43,10 +35,6 @@ impl FrameDrawList {
             texts: std::mem::take(&mut renderer.texts),
             images: std::mem::take(&mut renderer.images),
             custom_draws: std::mem::take(&mut renderer.custom_draws),
-            compute_draws: std::mem::take(&mut renderer.compute_draws),
-            subdivide_renders: std::mem::take(&mut renderer.subdivide_renders),
-            compute_lines: std::mem::take(&mut renderer.compute_lines),
-            line_draws: std::mem::take(&mut renderer.line_draws),
             shaped_text_buffers: None,
         }
     }
@@ -56,9 +44,5 @@ impl FrameDrawList {
             && self.texts.is_empty()
             && self.images.is_empty()
             && self.custom_draws.is_empty()
-            && self.compute_draws.is_empty()
-            && self.subdivide_renders.is_empty()
-            && self.compute_lines.is_empty()
-            && self.line_draws.is_empty()
     }
 }

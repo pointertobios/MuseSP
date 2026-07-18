@@ -22,18 +22,55 @@ impl ShaderLibrary {
             modules.insert(label.to_string(), compile(label, source));
         };
 
-        insert(&mut modules, "surface_eval", include_str!("../../musesp/src/gameplay/shader_pass1_eval.wgsl"));
-        insert(&mut modules, "surface_final", include_str!("../../musesp/src/gameplay/shader_pass1_final.wgsl"));
-        insert(&mut modules, "surface_pass2", include_str!("../../musesp/src/gameplay/shader_pass2.wgsl"));
-        insert(&mut modules, "line_eval", include_str!("../../musesp/src/gameplay/line_subdivide_eval.wgsl"));
-        insert(&mut modules, "line_final", include_str!("../../musesp/src/gameplay/line_subdivide_final.wgsl"));
-        insert(&mut modules, "line_render", include_str!("../../musesp/src/gameplay/line.wgsl"));
+        insert(
+            &mut modules,
+            "surface_eval",
+            include_str!("../../musesp/src/gameplay/shader_pass1_eval.wgsl"),
+        );
+        insert(
+            &mut modules,
+            "surface_final",
+            include_str!("../../musesp/src/gameplay/shader_pass1_final.wgsl"),
+        );
+        insert(
+            &mut modules,
+            "surface_pass2",
+            include_str!("../../musesp/src/gameplay/shader_pass2.wgsl"),
+        );
+        insert(
+            &mut modules,
+            "line_eval",
+            include_str!("../../musesp/src/gameplay/line_subdivide_eval.wgsl"),
+        );
+        insert(
+            &mut modules,
+            "line_final",
+            include_str!("../../musesp/src/gameplay/line_subdivide_final.wgsl"),
+        );
+        insert(
+            &mut modules,
+            "line_render",
+            include_str!("../../musesp/src/gameplay/line.wgsl"),
+        );
+
+        // UI 层 shader
+        insert(
+            &mut modules,
+            "rect",
+            include_str!("../../musesp_ui/src/shaders/rect.wgsl"),
+        );
+        insert(
+            &mut modules,
+            "texture",
+            include_str!("../../musesp_ui/src/shaders/texture.wgsl"),
+        );
 
         ShaderLibrary { modules }
     }
 
     pub fn get(&self, label: &str) -> &Arc<ShaderModule> {
-        self.modules.get(label)
+        self.modules
+            .get(label)
             .unwrap_or_else(|| panic!("Shader '{label}' not found in library"))
     }
 }
