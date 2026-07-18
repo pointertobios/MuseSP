@@ -11,6 +11,7 @@ use winit::window::Window;
 use crate::renderer::{FrameDrawList, FramePipeline, UIRenderer, WgpuRenderer};
 use crate::router::{AnyPage, PageToken, Router};
 use musesp_config::config::Config;
+use musesp_config::shader_library::ShaderLibrary;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunMode {
@@ -216,15 +217,16 @@ impl Application {
         wgpu.update_camera(elapsed);
 
         // 6. Compute passes
-        wgpu.run_compute_passes(&mut encoder, &dl.compute_draws);
+        wgpu.run_adaptive_subdivide(&mut encoder, &dl.subdivide_renders);
+        wgpu.compute_line_subdivide(&mut encoder, &dl.compute_lines);
 
-        // 7. 渲染通道
+        // 7. 渲染通道（渲染到 MSAA 目标，自动 resolve 到 surface）
         {
             let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
+                    view: &wgpu.msaa_color_view,
+                    resolve_target: Some(&view),
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
                             r: 0.1,
@@ -252,6 +254,9 @@ impl Application {
             wgpu.draw_rects(&mut rp, &dl.rects);
             wgpu.draw_images(&mut rp, &dl.images);
             wgpu.draw_display(&mut rp, &dl.compute_draws);
+            wgpu.draw_subdivided(&mut rp, &dl.subdivide_renders);
+            wgpu.draw_lines(&mut rp, &dl.line_draws);
+            wgpu.draw_compute_lines(&mut rp, &dl.compute_lines);
             wgpu.draw_custom(&mut rp, &dl.custom_draws);
 
             if let Err(e) = text_renderer.render(atlas, &viewport, &mut rp) {
@@ -280,6 +285,13 @@ impl ApplicationHandler for Application {
 
         self.init_router(size.width as i32, size.height as i32);
         let wgpu = self.rt_handle.block_on(WgpuRenderer::new(window.clone()));
+
+        // 预编译所有 shader
+        let shader_library = Arc::new(ShaderLibrary::new(&wgpu.device));
+        if let Some(router) = &self.router {
+            router.borrow_mut().set_shader_library(Some(shader_library.clone()));
+        }
+
         let format = wgpu.config.format;
 
         let cache = glyphon::Cache::new(&wgpu.device);
@@ -287,7 +299,10 @@ impl ApplicationHandler for Application {
         let text_renderer = glyphon::TextRenderer::new(
             &mut atlas,
             &wgpu.device,
-            wgpu::MultisampleState::default(),
+            wgpu::MultisampleState {
+                count: wgpu.sample_count,
+                ..Default::default()
+            },
             Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
                 depth_write_enabled: Some(false),

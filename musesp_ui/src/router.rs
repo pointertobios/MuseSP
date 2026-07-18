@@ -10,8 +10,9 @@ use tokio::sync::mpsc;
 use winit::event::WindowEvent;
 
 use crate::components::core::ComponentBase;
-use crate::renderer::{DrawCompute, UIRenderer};
+use crate::renderer::{DrawCompute, DrawComputeLines, DrawLines, DrawSubdivideAndRender, UIRenderer};
 use musesp_config::config::Config;
+use musesp_config::shader_library::ShaderLibrary;
 
 pub use crate::application::RunMode;
 
@@ -21,6 +22,14 @@ pub struct Page {
     pub nav: Option<mpsc::Sender<NavAction>>,
     /// 可选：每帧生成 compute 绘制命令的回调（参数：screen_w, screen_h）。
     pub compute_draw_fn: Option<Box<dyn Fn(u32, u32) -> Vec<DrawCompute> + Send>>,
+    /// 可选：每帧生成 Subdivide→Render 绘制命令的回调。
+    pub subdivide_render_fn: Option<Box<dyn Fn(u32, u32) -> Vec<DrawSubdivideAndRender> + Send>>,
+    /// 可选：每帧生成 3D 直线绘制命令的回调。
+    pub line_draw_fn: Option<Box<dyn Fn(u32, u32) -> Vec<DrawLines> + Send>>,
+    /// 可选：每帧生成 Compute Lines（GPU 线段细分 + 渲染）的回调。
+    pub compute_lines_fn: Option<Box<dyn Fn(u32, u32) -> Vec<DrawComputeLines> + Send>>,
+    /// 预编译的 shader 模块库。
+    pub shader_library: Option<Arc<ShaderLibrary>>,
 }
 
 pub struct PageToken {
@@ -48,6 +57,10 @@ impl Page {
             should_exit: None,
             nav: None,
             compute_draw_fn: None,
+            subdivide_render_fn: None,
+            line_draw_fn: None,
+            compute_lines_fn: None,
+            shader_library: None,
         }
     }
 
@@ -85,6 +98,15 @@ impl Page {
     pub fn draw(&self, renderer: &mut UIRenderer, screen_w: u32, screen_h: u32) {
         if let Some(ref f) = self.compute_draw_fn {
             renderer.compute_draws.extend(f(screen_w, screen_h));
+        }
+        if let Some(ref f) = self.subdivide_render_fn {
+            renderer.subdivide_renders.extend(f(screen_w, screen_h));
+        }
+        if let Some(ref f) = self.line_draw_fn {
+            renderer.line_draws.extend(f(screen_w, screen_h));
+        }
+        if let Some(ref f) = self.compute_lines_fn {
+            renderer.compute_lines.extend(f(screen_w, screen_h));
         }
         for child in &self.root.children {
             child.draw(renderer, self.root.x, self.root.y);
@@ -134,6 +156,7 @@ pub struct Router {
     pub should_exit: Arc<AtomicBool>,
     nav_sender: mpsc::Sender<NavAction>,
     nav_receiver: mpsc::Receiver<NavAction>,
+    shader_library: Option<Arc<ShaderLibrary>>,
 }
 
 pub enum NavAction {
@@ -155,12 +178,18 @@ impl Router {
             should_exit: Arc::new(AtomicBool::new(false)),
             nav_sender,
             nav_receiver,
+            shader_library: None,
         }
+    }
+
+    pub fn set_shader_library(&mut self, library: Option<Arc<ShaderLibrary>>) {
+        self.shader_library = library;
     }
 
     pub async fn init_page(&mut self, page: &mut Box<dyn AnyPage>) {
         page.page_mut().nav = Some(self.nav_sender.clone());
         page.page_mut().should_exit = Some(self.should_exit.clone());
+        page.page_mut().shader_library = self.shader_library.clone();
         page.build().await;
         page.page_mut().root.width = self.win_w;
         page.page_mut().root.height = self.win_h;

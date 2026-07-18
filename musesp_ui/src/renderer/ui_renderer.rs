@@ -1,5 +1,5 @@
 use crate::components::image::ImageData;
-use super::types::{ComputeSnapshot, DrawCompute, DrawImage, DrawRect, DrawRendererCanvas, DrawText, RenderSnapshot, VertexLayoutDesc};
+use super::types::{ComputeBindingMode, ComputeSnapshot, DrawCompute, DrawComputeLines, DrawImage, DrawLines, DrawRect, DrawRendererCanvas, DrawSubdivideAndRender, DrawText, RenderSnapshot, VertexLayoutDesc};
 
 pub struct UIRenderer {
     pub rects: Vec<DrawRect>,
@@ -7,6 +7,9 @@ pub struct UIRenderer {
     pub images: Vec<DrawImage>,
     pub custom_draws: Vec<DrawRendererCanvas>,
     pub compute_draws: Vec<DrawCompute>,
+    pub subdivide_renders: Vec<DrawSubdivideAndRender>,
+    pub compute_lines: Vec<DrawComputeLines>,
+    pub line_draws: Vec<DrawLines>,
     clip_stack: Vec<(i32, i32, i32, i32)>,
 }
 
@@ -18,6 +21,9 @@ impl UIRenderer {
             images: Vec::new(),
             custom_draws: Vec::new(),
             compute_draws: Vec::new(),
+            subdivide_renders: Vec::new(),
+            compute_lines: Vec::new(),
+            line_draws: Vec::new(),
             clip_stack: Vec::new(),
         }
     }
@@ -28,6 +34,9 @@ impl UIRenderer {
         self.images.clear();
         self.custom_draws.clear();
         self.compute_draws.clear();
+        self.subdivide_renders.clear();
+        self.compute_lines.clear();
+        self.line_draws.clear();
         self.clip_stack.clear();
     }
 
@@ -120,6 +129,7 @@ impl UIRenderer {
             compute_wgsl: compute_wgsl.to_string(),
             display_wgsl: display_wgsl.to_string(),
             snapshot: snapshot.clone(),
+            binding_mode: ComputeBindingMode::Standard,
         });
     }
 }

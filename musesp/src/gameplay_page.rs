@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use musesp_ui::components::core::Constraintable;
 use musesp_ui::components::image_button::ImageButton;
-use musesp_ui::renderer::DrawCompute;
+use musesp_ui::renderer::{DrawComputeLines, DrawSubdivideAndRender};
 use musesp_ui::router::{AnyPage, NavAction, Page};
 
 use crate::gameplay::renderer3d::{self, AsyncSnapshotProducer};
@@ -47,16 +47,37 @@ impl AnyPage for GameplayPage {
         renderer3d::set_snapshot_producer(Arc::clone(&producer));
         self._producer = Some(producer);
 
-        // compute_draw_fn：通过全局单例无阻塞读取预计算结果
-        let compute_wgsl = include_str!("gameplay/shader_compute.wgsl").to_string();
-        let display_wgsl = include_str!("gameplay/display_compute.wgsl").to_string();
+        let shaders = self.page.shader_library.as_ref().expect("ShaderLibrary not set");
 
-        self.page.compute_draw_fn = Some(Box::new(move |screen_w: u32, screen_h: u32| {
+        // 曲面：两-pass 自适应细分
+        let se = Arc::clone(shaders.get("surface_eval"));
+        let sf = Arc::clone(shaders.get("surface_final"));
+        let p2 = Arc::clone(shaders.get("surface_pass2"));
+        self.page.subdivide_render_fn = Some(Box::new(move |screen_w: u32, screen_h: u32| {
             let snap = renderer3d::latest_snapshot(screen_w, screen_h);
-            vec![DrawCompute {
-                compute_wgsl: compute_wgsl.clone(),
-                display_wgsl: display_wgsl.clone(),
+            vec![DrawSubdivideAndRender {
+                eval_module: Arc::clone(&se),
+                final_module: Arc::clone(&sf),
+                vertex_module: Arc::clone(&p2),
+                fragment_module: Arc::clone(&p2),
                 snapshot: snap,
+            }]
+        }));
+
+        // 线段：两-pass 自适应细分
+        let le = Arc::clone(shaders.get("line_eval"));
+        let lf = Arc::clone(shaders.get("line_final"));
+        let lr = Arc::clone(shaders.get("line_render"));
+        self.page.compute_lines_fn = Some(Box::new(move |sw: u32, sh: u32| {
+            let (endpoints, line_count, uniform) = renderer3d::latest_compute_lines_snapshot(sw, sh);
+            vec![DrawComputeLines {
+                eval_module: Arc::clone(&le),
+                final_module: Arc::clone(&lf),
+                vertex_module: Arc::clone(&lr),
+                fragment_module: Arc::clone(&lr),
+                endpoint_data: endpoints,
+                line_count,
+                uniform_data: uniform,
             }]
         }));
 

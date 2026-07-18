@@ -1,394 +1,278 @@
-//! 3D 渲染管线 —— 摄像机参数写死为常量，场景中包含一个旋转正方体。
+//! 球坐标渲染管线（两 pass 架构）。
 //!
-//! 使用 `precompute_geometry()` + `finalize_snapshot()` 构建 compute 管线快照。
-//! 推荐通过 `AsyncSnapshotProducer` 在后台异步预计算几何数据。
+//! Pass 1 (GPU Subdivide)：在球坐标参数空间细分粗三角形 → Cartesian → 屏幕坐标
+//! Pass 2 (GPU Rasterize)：屏幕空间子三角形边函数光栅化 + Alpha 混合
+//!
+//! CPU 只负责生成粗球坐标几何 + view_proj 矩阵。
 
 use musesp_ui::renderer::ComputeSnapshot;
 use std::f32::consts::PI;
 use std::sync::Arc;
 
-// ── 摄像机常量 ────────────────────────────────────────────────────────
+// ── 常量 ──────────────────────────────────────────────────────────────
 
-/// 摄像机世界位置
-const CAMERA_EYE: [f32; 3] = [0.0, 0.0, 5.0];
-/// 摄像机注视目标
+const CAMERA_EYE: [f32; 3] = [4.0, 3.0, 4.0];
 const CAMERA_TARGET: [f32; 3] = [0.0, 0.0, 0.0];
-/// 世界 Up 向量
 const CAMERA_UP: [f32; 3] = [0.0, 1.0, 0.0];
-/// 垂直 FOV（度）
 const FOV_DEGREES: f32 = 60.0;
-/// 近裁剪面
 const NEAR: f32 = 0.1;
-/// 远裁剪面
 const FAR: f32 = 100.0;
-/// 屏幕宽高比（16:9）
 const ASPECT: f32 = 16.0 / 9.0;
+const SUB_GRID_SIZE: u32 = 6;
+const TAU: f32 = 2.0 * PI;
 
-// ── Uniform 类型 ──────────────────────────────────────────────────────
+// ── 球坐标顶点（传给 GPU Pass 1）─────────────────────────────────────
 
-/// 传给 compute shader 的 Params（与 WGSL Params 布局一致，80 字节）：
-///   offset  0: view_proj      (mat4x4, 64B)
-///   offset 64: triangle_count (u32,   4B)
-///   offset 68: screen_width   (f32,   4B)
-///   offset 72: screen_height  (f32,   4B)
-///   offset 76: _pad           (u32,   4B)
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-struct ComputeParams {
-    view_proj: [[f32; 4]; 4],
-    triangle_count: u32,
-    screen_width: f32,
-    screen_height: f32,
-    _pad: u32,
+struct SphericalVertex {
+    pub r: f32, pub theta: f32, pub phi: f32, _pad: f32, pub color: [f32; 4],
 }
 
-// ── 顶点类型 ──────────────────────────────────────────────────────────
+impl SphericalVertex {
+    fn new(r: f32, theta: f32, phi: f32, color: [f32; 4]) -> Self { SphericalVertex { r, theta, phi, _pad: 0.0, color } }
+}
 
-/// 3D 顶点：位置 (vec3) + 填充 + 颜色 (vec4)，共 32 字节。
-/// 布局匹配 WGSL compute shader 的 Vertex 结构体。
+// ── 直线顶点（球坐标，传给 GPU line pipeline）─────────────────────────
+
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-struct Vertex3D {
-    pub position: [f32; 3],
+pub struct LineVertex {
+    /// 球坐标：半径 r（到原点距离）
+    pub r: f32,
+    /// 球坐标：极角 theta（从 Y 轴，0..π）
+    pub theta: f32,
+    /// 球坐标：方位角 phi（从 +X 轴，绕 Y 轴）
+    pub phi: f32,
     _pad: f32,
     pub color: [f32; 4],
 }
 
-// ── 正方体几何数据 ────────────────────────────────────────────────────
+impl LineVertex {
+    #[allow(dead_code)]
+    pub fn from_cartesian(pos: [f32; 3], color: [f32; 4]) -> Self {
+        let r = (pos[0] * pos[0] + pos[1] * pos[1] + pos[2] * pos[2]).sqrt();
+        let (theta, phi) = if r < 1e-6 {
+            (0.0, 0.0) // 原点退化，任意角度均可
+        } else {
+            (f32::acos(pos[1] / r), f32::atan2(pos[2], pos[0]))
+        };
+        LineVertex { r, theta, phi, _pad: 0.0, color }
+    }
+}
 
-/// 生成单位正方体的 8 个顶点（每面不同颜色，便于观察旋转）。
-fn cube_vertices() -> Vec<Vertex3D> {
-    // 6 个面分别着色：红、绿、蓝、黄、青、品红
-    let colors: [[f32; 4]; 6] = [
-        [1.0, 0.0, 0.0, 0.6], // +X 红
-        [0.0, 1.0, 0.0, 0.6], // -X 绿
-        [0.0, 0.0, 1.0, 0.6], // +Y 蓝
-        [1.0, 1.0, 0.0, 0.6], // -Y 黄
-        [0.0, 1.0, 1.0, 0.6], // +Z 青
-        [1.0, 0.0, 1.0, 0.6], // -Z 品红
+// ── Pass 1 参数（80 字节） ────────────────────────────────────────────
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct SubdivideParams {
+    view_proj: [[f32; 4]; 4],
+    /// 点光源 / 摄像机位置（世界空间）
+    camera_eye: [f32; 3],
+    _pad2: f32,
+    triangle_count: u32,
+    sub_grid_size: u32,
+    screen_width: f32,
+    screen_height: f32,
+}
+
+// ── 几何生成 ──────────────────────────────────────────────────────────
+
+/// 东半球：θ ∈ [0, π]（全南北），φ ∈ [-π/2, π/2]（东半，+X 侧）
+fn hemisphere(theta_bands: u32, phi_steps: u32, rot_phi: f32) -> (Vec<SphericalVertex>, Vec<u32>) {
+    let r = 1.0f32;
+    let mut v = Vec::with_capacity(((theta_bands + 1) * phi_steps) as usize);
+    for i in 0..=theta_bands {
+        let th = (i as f32 / theta_bands as f32) * PI;
+        for j in 0..phi_steps {
+            let bp = -PI/2.0 + (j as f32 / phi_steps as f32) * PI;
+            v.push(SphericalVertex::new(r, th, (bp + rot_phi) % TAU, hemi_color(th, bp)));
+        }
+    }
+    let mut idx = Vec::with_capacity((theta_bands * phi_steps * 6) as usize);
+    for i in 0..theta_bands {
+        for j in 0..phi_steps {
+            let jn = (j + 1) % phi_steps;
+            let (tl, tr, bl, br) = (i*phi_steps+j, i*phi_steps+jn, (i+1)*phi_steps+j, (i+1)*phi_steps+jn);
+            idx.push(tl); idx.push(br); idx.push(bl); idx.push(tl); idx.push(tr); idx.push(br);
+        }
+    }
+    (v, idx)
+}
+
+/// 颜色同时依赖 theta（极角，南北渐变）和 phi（方位角，水平渐变）。
+/// 使用 HSL→RGB 转换，饱和度 100%，亮度 50%，产生鲜艳彩虹。
+fn hemi_color(theta: f32, phi: f32) -> [f32; 4] {
+    let tp = (phi + PI/2.0) / PI; // 0..1 色相
+    let tt = theta / PI;           // 0..1 垂直
+    // HSL 彩虹: H=tp 完整周期, S=1.0, L=0.5
+    let h = tp * 6.0; // 0..6
+    let c = 1.0; // chroma
+    let x = c * (1.0 - (h % 2.0 - 1.0).abs());
+    let (r1, g1, b1) = if h < 1.0 { (c, x, 0.0) }
+        else if h < 2.0 { (x, c, 0.0) }
+        else if h < 3.0 { (0.0, c, x) }
+        else if h < 4.0 { (0.0, x, c) }
+        else if h < 5.0 { (x, 0.0, c) }
+        else { (c, 0.0, x) };
+    // 亮度在赤道最亮，两极渐暗
+    let bright = 0.3 + 0.7 * (tt * (1.0 - tt) * 4.0).sqrt();
+    [r1 * bright, g1 * bright, b1 * bright, 0.6]
+}
+
+fn all_geometry(elapsed_secs: f32) -> (Vec<SphericalVertex>, Vec<u32>) {
+    let rot = elapsed_secs * 0.8;
+    hemisphere(10, 20, rot)
+}
+
+/// 生成球坐标参考线的粗端点（每对 = 一条逻辑线段）。
+///
+/// GPU compute shader 负责在球坐标空间细分 + sph_to_cart 转换。
+/// - 赤道（红色）：r=1, θ=π/2, φ: 0→2π
+/// - 极轴北半（蓝色）：θ=0, r: 1→0
+/// - 极轴南半（蓝色）：θ=π, r: 0→1
+fn reference_lines() -> (Vec<LineVertex>, u32) {
+    let equator_color = [1.0, 0.1, 0.1, 0.9];
+    let polar_color = [0.1, 0.3, 1.0, 0.9];
+
+    let verts = vec![
+        // 赤道
+        LineVertex { r: 1.0, theta: PI / 2.0, phi: 0.0, _pad: 0.0, color: equator_color },
+        LineVertex { r: 1.0, theta: PI / 2.0, phi: TAU, _pad: 0.0, color: equator_color },
+        // 极轴北半
+        LineVertex { r: 1.0, theta: 0.0, phi: 0.0, _pad: 0.0, color: polar_color },
+        LineVertex { r: 0.0, theta: 0.0, phi: 0.0, _pad: 0.0, color: polar_color },
+        // 极轴南半
+        LineVertex { r: 0.0, theta: PI, phi: 0.0, _pad: 0.0, color: polar_color },
+        LineVertex { r: 1.0, theta: PI, phi: 0.0, _pad: 0.0, color: polar_color },
     ];
-
-    // 半边长 1.0
-    let h = 1.0f32;
-
-    // 24 个顶点（每面 4 个，非共享）
-    vec![
-        // +X 面 (右)  —— 红
-        v([h, h, h], colors[0]),
-        v([h, -h, h], colors[0]),
-        v([h, -h, -h], colors[0]),
-        v([h, h, -h], colors[0]),
-        // -X 面 (左)  —— 绿
-        v([-h, h, -h], colors[1]),
-        v([-h, -h, -h], colors[1]),
-        v([-h, -h, h], colors[1]),
-        v([-h, h, h], colors[1]),
-        // +Y 面 (上)  —— 蓝
-        v([-h, h, -h], colors[2]),
-        v([-h, h, h], colors[2]),
-        v([h, h, h], colors[2]),
-        v([h, h, -h], colors[2]),
-        // -Y 面 (下)  —— 黄
-        v([-h, -h, h], colors[3]),
-        v([-h, -h, -h], colors[3]),
-        v([h, -h, -h], colors[3]),
-        v([h, -h, h], colors[3]),
-        // +Z 面 (前)  —— 青
-        v([-h, h, h], colors[4]),
-        v([-h, -h, h], colors[4]),
-        v([h, -h, h], colors[4]),
-        v([h, h, h], colors[4]),
-        // -Z 面 (后)  —— 品红
-        v([h, h, -h], colors[5]),
-        v([h, -h, -h], colors[5]),
-        v([-h, -h, -h], colors[5]),
-        v([-h, h, -h], colors[5]),
-    ]
+    let line_count = (verts.len() / 2) as u32;
+    (verts, line_count)
 }
 
-fn v(pos: [f32; 3], color: [f32; 4]) -> Vertex3D {
-    Vertex3D {
-        position: pos,
-        _pad: 0.0,
-        color,
-    }
-}
+// ── 矩阵运算（列优先，适配 wgpu / WGSL）───────────────────────────────
+// 存储约定: m[col][row]，即 m[c] 为第 c 列
 
-/// 正方体索引（6 面 × 2 三角形 × 3 = 36 个索引）。
-fn cube_indices() -> Vec<u32> {
-    let mut indices = Vec::with_capacity(36);
-    for face in 0..6u32 {
-        let base = face * 4;
-        indices.push(base);
-        indices.push(base + 1);
-        indices.push(base + 2);
-        indices.push(base);
-        indices.push(base + 2);
-        indices.push(base + 3);
-    }
-    indices
-}
-
-// ── 坐标轴几何数据（细长四边形，TriangleList 渲染） ────────────────────
-
-const AXIS_LENGTH: f32 = 2.5;
-const AXIS_HALF_THICKNESS: f32 = 0.025;
-
-/// X / Y / Z 正半轴：3 条 × 4 顶点 × 2 三角形 = 12 顶点 + 18 索引。
-fn axis_vertices() -> Vec<Vertex3D> {
-    let t = AXIS_HALF_THICKNESS;
-    let l = AXIS_LENGTH;
-    let red: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
-    let green: [f32; 4] = [0.0, 1.0, 0.0, 1.0];
-    let blue: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
-
-    vec![
-        // X 轴（红）—— XY 平面上的水平细条
-        v([0.0, -t, 0.0], red),
-        v([0.0, t, 0.0], red),
-        v([l, t, 0.0], red),
-        v([l, -t, 0.0], red),
-        // Y 轴（绿）—— XY 平面上的竖直细条
-        v([-t, 0.0, 0.0], green),
-        v([t, 0.0, 0.0], green),
-        v([t, l, 0.0], green),
-        v([-t, l, 0.0], green),
-        // Z 轴（蓝）—— YZ 平面上的纵深细条
-        v([0.0, -t, 0.0], blue),
-        v([0.0, t, 0.0], blue),
-        v([0.0, t, l], blue),
-        v([0.0, -t, l], blue),
-    ]
-}
-
-fn axis_indices(base: u32) -> Vec<u32> {
-    let mut idx = Vec::with_capacity(18);
-    for face in 0..3u32 {
-        let b = base + face * 4;
-        idx.push(b);
-        idx.push(b + 1);
-        idx.push(b + 2);
-        idx.push(b);
-        idx.push(b + 2);
-        idx.push(b + 3);
-    }
-    idx
-}
-
-// ── 矩阵运算 ──────────────────────────────────────────────────────────
-
-/// 透视投影矩阵（wgpu NDC: Y 向上, Z ∈ [0,1]）。
 fn perspective(fov_rad: f32, aspect: f32, near: f32, far: f32) -> [[f32; 4]; 4] {
     let f = 1.0 / (fov_rad / 2.0).tan();
-    let d = near - far; // = -(far - near)
+    let d = near - far;
     [
-        [f / aspect, 0.0, 0.0, 0.0],
-        [0.0, f, 0.0, 0.0],
-        [0.0, 0.0, far / d, (near * far) / d],
-        [0.0, 0.0, -1.0, 0.0],
+        [f / aspect, 0.0, 0.0, 0.0], // col 0
+        [0.0, f, 0.0, 0.0],          // col 1
+        [0.0, 0.0, far / d, -1.0],   // col 2
+        [0.0, 0.0, (near * far) / d, 0.0], // col 3
     ]
 }
 
-/// Look-at 视图矩阵（行优先）。
-///
-/// V = R^T * T(-eye)，将世界坐标变换到相机空间。
 fn look_at(eye: [f32; 3], target: [f32; 3], up: [f32; 3]) -> [[f32; 4]; 4] {
     let fwd = normalize(sub(target, eye));
     let right = normalize(cross(fwd, up));
     let up2 = cross(right, fwd);
-
-    // R^T: 行 = 相机基向量
-    // 位移 = -R^T * eye = [-dot(right,eye), -dot(up2,eye), dot(fwd,eye)]
     [
-        [right[0], right[1], right[2], -dot(right, eye)],
-        [up2[0], up2[1], up2[2], -dot(up2, eye)],
-        [-fwd[0], -fwd[1], -fwd[2], dot(fwd, eye)],
-        [0.0, 0.0, 0.0, 1.0],
+        [right[0], up2[0], -fwd[0], 0.0],                          // col 0
+        [right[1], up2[1], -fwd[1], 0.0],                          // col 1
+        [right[2], up2[2], -fwd[2], 0.0],                          // col 2
+        [-dot(right, eye), -dot(up2, eye), dot(fwd, eye), 1.0],    // col 3
     ]
 }
 
 fn mul4(a: &[[f32; 4]; 4], b: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
     let mut m = [[0.0f32; 4]; 4];
-    for i in 0..4 {
-        for j in 0..4 {
-            m[i][j] = a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j] + a[i][3] * b[3][j];
+    for c in 0..4 {
+        for r in 0..4 {
+            m[c][r] = a[0][r] * b[c][0] + a[1][r] * b[c][1] + a[2][r] * b[c][2] + a[3][r] * b[c][3];
         }
     }
     m
 }
+fn sub(a:[f32;3],b:[f32;3])->[f32;3]{[a[0]-b[0],a[1]-b[1],a[2]-b[2]]}
+fn dot(a:[f32;3],b:[f32;3])->f32{a[0]*b[0]+a[1]*b[1]+a[2]*b[2]}
+fn cross(a:[f32;3],b:[f32;3])->[f32;3]{[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]]}
+fn normalize(v:[f32;3])->[f32;3]{let l=(v[0]*v[0]+v[1]*v[1]+v[2]*v[2]).sqrt();[v[0]/l,v[1]/l,v[2]/l]}
 
-fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
+// ── 双 snapshot 输出 ──────────────────────────────────────────────────
 
-fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-fn normalize(v: [f32; 3]) -> [f32; 3] {
-    let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-    [v[0] / len, v[1] / len, v[2] / len]
-}
-
-/// 转置 4×4 矩阵。
-/// Rust 行优先 → WGSL 列优先（mat4x4 按列存储），发送前需转置。
-fn transpose(m: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
-    let mut t = [[0.0f32; 4]; 4];
-    for i in 0..4 {
-        for j in 0..4 {
-            t[i][j] = m[j][i];
-        }
-    }
-    t
-}
-
-// ── Compute 管线接口 ─────────────────────────────────────────────────
-
-/// 预计算的几何数据（不含屏幕尺寸）。
-/// 后台 tokio 任务持续计算此结构，渲染线程补上屏幕参数即可使用。
 #[derive(Clone)]
 pub struct PrecomputedGeometry {
-    pub vertex_data: Vec<u8>,
-    pub indices: Vec<u32>,
-    pub vertex_count: u32,
-    pub triangle_count: u32,
+    pub coarse_verts: Vec<u8>,
+    pub coarse_indices: Vec<u32>,
+    pub coarse_tri_count: u32,
     pub view_proj: [[f32; 4]; 4],
+    pub line_endpoints: Vec<u8>,
+    pub line_count: u32,
 }
 
-/// 仅计算与屏幕尺寸无关的几何数据（顶点旋转 + view_proj）。
 pub fn precompute_geometry(elapsed_secs: f32) -> PrecomputedGeometry {
-    let mut vertices = cube_vertices();
-    let axis_base = vertices.len() as u32;
-    vertices.extend(axis_vertices());
-
-    let cube_idx = cube_indices();
-    let axis_idx = axis_indices(axis_base);
-    let mut all_indices = cube_idx;
-    all_indices.extend(axis_idx);
-
-    let triangle_count = (all_indices.len() / 3) as u32;
-
-    // CPU 旋转正方体顶点（绕 Y 轴），坐标轴不动
-    let angle = elapsed_secs * 0.3 * TAU;
-    let (sin_a, cos_a) = angle.sin_cos();
-    for v in &mut vertices[..axis_base as usize] {
-        let x = v.position[0] * cos_a + v.position[2] * sin_a;
-        let z = -v.position[0] * sin_a + v.position[2] * cos_a;
-        v.position[0] = x;
-        v.position[2] = z;
-    }
-
+    let (verts, indices) = all_geometry(elapsed_secs);
+    let (lverts, lcount) = reference_lines();
     let proj = perspective(FOV_DEGREES.to_radians(), ASPECT, NEAR, FAR);
     let view = look_at(CAMERA_EYE, CAMERA_TARGET, CAMERA_UP);
-    let view_proj = mul4(&proj, &view);
-
+    let tri_count = (indices.len()/3) as u32;
     PrecomputedGeometry {
-        vertex_data: bytemuck::cast_slice(&vertices).to_vec(),
-        indices: all_indices,
-        vertex_count: vertices.len() as u32,
-        triangle_count,
-        view_proj: transpose(&view_proj),
+        coarse_verts: bytemuck::cast_slice(&verts).to_vec(),
+        coarse_indices: indices,
+        coarse_tri_count: tri_count,
+        view_proj: mul4(&proj, &view),
+        line_endpoints: bytemuck::cast_slice(&lverts).to_vec(),
+        line_count: lcount,
     }
 }
 
-/// 用预计算的几何 + 当前屏幕尺寸拼装完整 ComputeSnapshot。
-pub fn finalize_snapshot(
+pub fn finalize_snapshot(geo: &PrecomputedGeometry, screen_w: u32, screen_h: u32) -> ComputeSnapshot {
+    let p = SubdivideParams {
+        view_proj: geo.view_proj,
+        camera_eye: CAMERA_EYE,
+        _pad2: 0.0,
+        triangle_count: geo.coarse_tri_count,
+        sub_grid_size: SUB_GRID_SIZE,
+        screen_width: screen_w as f32,
+        screen_height: screen_h as f32,
+    };
+    ComputeSnapshot { vertex_data: geo.coarse_verts.clone(), indices: geo.coarse_indices.clone(), uniform_data: bytemuck::bytes_of(&p).to_vec(), vertex_count: 0, triangle_count: geo.coarse_tri_count }
+}
+
+pub fn compute_lines_snapshot(
     geo: &PrecomputedGeometry,
     screen_w: u32,
     screen_h: u32,
-) -> ComputeSnapshot {
-    let params = ComputeParams {
-        view_proj: geo.view_proj,
-        triangle_count: geo.triangle_count,
-        screen_width: screen_w as f32,
-        screen_height: screen_h as f32,
-        _pad: 0,
-    };
-
-    ComputeSnapshot {
-        vertex_data: geo.vertex_data.clone(),
-        indices: geo.indices.clone(),
-        uniform_data: bytemuck::bytes_of(&params).to_vec(),
-        vertex_count: geo.vertex_count,
-        triangle_count: geo.triangle_count,
-    }
+) -> (Vec<u8>, u32, Vec<u8>) {
+    // uniform: view_proj(64) + line_count(4) + _pad(4) + screen_w(4) + screen_h(4) = 80 bytes
+    let mut uf = bytemuck::bytes_of(&geo.view_proj).to_vec();
+    uf.extend_from_slice(&geo.line_count.to_le_bytes());
+    uf.extend_from_slice(&0u32.to_le_bytes()); // _pad
+    uf.extend_from_slice(&screen_w.to_le_bytes());
+    uf.extend_from_slice(&screen_h.to_le_bytes());
+    (geo.line_endpoints.clone(), geo.line_count, uf)
 }
-
-// ── 异步快照生产者 ────────────────────────────────────────────────────
 
 use std::time::Instant;
 use tokio::sync::watch;
 
-/// 基于 tokio 后台任务的快照预计算器。
-///
-/// `tokio::spawn` 异步任务持续调用 `precompute_geometry()`，
-/// 将结果通过 `watch` channel 发送。渲染线程调用 `latest()` 时
-/// 无阻塞读取最新预计算结果。
-///
-/// 通过 `Arc` 共享，可在 `compute_draw_fn` 闭包中使用。
-pub struct AsyncSnapshotProducer {
-    rx: watch::Receiver<Option<PrecomputedGeometry>>,
-    _tx: watch::Sender<Option<PrecomputedGeometry>>,
-}
+pub struct AsyncSnapshotProducer { rx: watch::Receiver<Option<PrecomputedGeometry>>, _tx: watch::Sender<Option<PrecomputedGeometry>> }
 
 impl AsyncSnapshotProducer {
-    /// 启动后台预计算任务（`tokio::spawn`，非阻塞池）。
     pub fn new() -> Self {
-        let (tx, rx) = watch::channel(None);
-        let tx2 = tx.clone();
-
-        tokio::spawn(async move {
-            let start = Instant::now();
-            loop {
-                let elapsed = start.elapsed().as_secs_f32();
-                let geo = precompute_geometry(elapsed);
-                if tx2.send(Some(geo)).is_err() {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        });
-
+        let (tx, rx) = watch::channel(None); let tx2 = tx.clone();
+        tokio::spawn(async move { let start = Instant::now(); loop { let geo = precompute_geometry(start.elapsed().as_secs_f32()); if tx2.send(Some(geo)).is_err() { break; } tokio::task::yield_now().await; } });
         AsyncSnapshotProducer { rx, _tx: tx }
     }
-
-    /// 同步读取最新预计算结果，补上屏幕尺寸后返回绘制命令所需数据。
-    ///
-    /// `watch::Receiver::borrow()` 内部已同步，`&self` 即可。
-    /// 如果后台任务尚未产出第一帧，返回空的 snapshot。
     pub fn latest(&self, screen_w: u32, screen_h: u32) -> ComputeSnapshot {
+        match &*self.rx.borrow() { Some(geo) => finalize_snapshot(geo, screen_w, screen_h), None => ComputeSnapshot::empty() }
+    }
+    pub fn latest_compute_lines(&self, screen_w: u32, screen_h: u32) -> (Vec<u8>, u32, Vec<u8>) {
         match &*self.rx.borrow() {
-            Some(geo) => finalize_snapshot(geo, screen_w, screen_h),
-            None => ComputeSnapshot::empty(),
+            Some(geo) => compute_lines_snapshot(geo, screen_w, screen_h),
+            None => (Vec::new(), 0, Vec::new()),
         }
     }
 }
 
-/// 全局快照生产者（单例模式，供 compute_draw_fn 闭包使用）。
-///
-/// 在 gameplay_page 初始化时设置，之后各帧通过 `latest_snapshot()` 读取。
-static SNAPSHOT_PRODUCER: std::sync::OnceLock<Arc<AsyncSnapshotProducer>> =
-    std::sync::OnceLock::new();
-
-/// 设置全局快照生产者。应在页面构建时调用一次。
-pub fn set_snapshot_producer(producer: Arc<AsyncSnapshotProducer>) {
-    let _ = SNAPSHOT_PRODUCER.set(producer);
-}
-
-/// 读取全局快照生产者的最新帧（无阻塞）。
+static SNAPSHOT_PRODUCER: std::sync::OnceLock<Arc<AsyncSnapshotProducer>> = std::sync::OnceLock::new();
+pub fn set_snapshot_producer(p: Arc<AsyncSnapshotProducer>) { let _ = SNAPSHOT_PRODUCER.set(p); }
 pub fn latest_snapshot(screen_w: u32, screen_h: u32) -> ComputeSnapshot {
-    SNAPSHOT_PRODUCER
-        .get()
-        .map(|p| p.latest(screen_w, screen_h))
-        .unwrap_or_else(ComputeSnapshot::empty)
+    SNAPSHOT_PRODUCER.get().map(|p| p.latest(screen_w, screen_h)).unwrap_or_else(ComputeSnapshot::empty)
+}
+pub fn latest_compute_lines_snapshot(screen_w: u32, screen_h: u32) -> (Vec<u8>, u32, Vec<u8>) {
+    SNAPSHOT_PRODUCER.get().map(|p| p.latest_compute_lines(screen_w, screen_h)).unwrap_or_else(|| (Vec::new(), 0, Vec::new()))
 }
 
-const TAU: f32 = 2.0 * PI;
