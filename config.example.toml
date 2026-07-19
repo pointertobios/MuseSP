@@ -1,6 +1,18 @@
-[gameplay]
-music_assets_path = ["assets/builtin_musics"]
+[debug.gameplay]
+camera_adjustable = true
 
 [debug.ui]
 component_border = false
 render_profile = true
+
+[gameplay]
+music_assets_path = ["assets/builtin_musics"]
+notespeed = 12
+
+[gameplay.camera]
+direction = [-0.6587047576904297, 0.4403780698776245, 0.6100617051124573]
+eye = [20.797941207885742, -17.599939346313477, -17.574934005737305]
+far = 200.0
+fov_degrees = 46.0
+near = 0.10000000149011612
+up = [0.0, 1.0, 0.0]

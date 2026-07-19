@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use tokio::sync::mpsc;
 
 use winit::event::WindowEvent;
+use winit::window::Window;
 
 use crate::components::core::ComponentBase;
 use crate::renderer::{RenderPipeline, UIRenderer};
@@ -24,6 +25,8 @@ pub struct Page {
     pub render_pipeline: Option<Box<dyn RenderPipeline + 'static>>,
     /// 预编译的 shader 模块库。
     pub shader_library: Option<Arc<ShaderLibrary>>,
+    /// 窗口句柄（用于控制光标显示等系统级操作）。
+    pub window: Option<Arc<Window>>,
 }
 
 pub struct PageToken {
@@ -52,6 +55,7 @@ impl Page {
             nav: None,
             render_pipeline: None,
             shader_library: None,
+            window: None,
         }
     }
 
@@ -74,7 +78,7 @@ impl Page {
     }
 
     pub fn build(&mut self) {}
-    pub fn destroy(&mut self) {}
+    pub fn destroy(&mut self, _is_async: bool) {}
     pub fn on_hide(&mut self) {}
     pub fn on_activate(&mut self) {}
     pub fn full_shadow_promise(&self) -> bool {
@@ -107,7 +111,9 @@ pub trait AnyPage: Any + Send {
     fn page_mut(&mut self) -> &mut Page;
 
     async fn build(&mut self) {}
-    fn destroy(&mut self) {}
+    fn destroy(&mut self, is_async: bool) {
+        self.page_mut().destroy(is_async);
+    }
     fn on_hide(&mut self) {}
     fn on_activate(&mut self) {}
     fn full_shadow_promise(&self) -> bool {
@@ -138,6 +144,7 @@ pub struct Router {
     nav_sender: mpsc::Sender<NavAction>,
     nav_receiver: mpsc::Receiver<NavAction>,
     shader_library: Option<Arc<ShaderLibrary>>,
+    window: Option<Arc<Window>>,
 }
 
 pub enum NavAction {
@@ -160,6 +167,7 @@ impl Router {
             nav_sender,
             nav_receiver,
             shader_library: None,
+            window: None,
         }
     }
 
@@ -167,16 +175,24 @@ impl Router {
         self.shader_library = library;
     }
 
+    pub fn set_window(&mut self, window: Arc<Window>) {
+        self.window = Some(window);
+    }
+
     pub async fn init_page(&mut self, page: &mut Box<dyn AnyPage>) {
         page.page_mut().nav = Some(self.nav_sender.clone());
         page.page_mut().should_exit = Some(self.should_exit.clone());
         page.page_mut().shader_library = self.shader_library.clone();
-        page.build().await;
+        page.page_mut().window = self.window.clone();
+        // 必须在 build 之前设置根尺寸，因为页面可能在 build 中读取
+        // 窗口尺寸（例如：判定区域的 NDC 坐标转换需要 screen_size）
         page.page_mut().root.width = self.win_w;
         page.page_mut().root.height = self.win_h;
+        page.build().await;
         page.prepare_layout();
         page.page_mut().root.layout(None);
         self.mode.set(page.initial_mode());
+        page.on_activate();
     }
 
     pub async fn push<P: AnyPage + 'static>(&mut self, page: P) {
@@ -197,7 +213,7 @@ impl Router {
         if let Some(v) = value {
             token.resolve(v);
         }
-        page.destroy();
+        page.destroy(true);
         if let Some((current, _)) = self.stack.last_mut() {
             current.on_activate();
             self.mode.set(current.initial_mode());
@@ -210,7 +226,7 @@ impl Router {
             current.page_mut().root.force_mouse_exit().await;
         }
         for (mut p, _) in self.stack.drain(..) {
-            p.destroy();
+            p.destroy(true);
         }
         let mut boxed: Box<dyn AnyPage> = Box::new(page);
         self.init_page(&mut boxed).await;
@@ -232,7 +248,7 @@ impl Router {
         if let Some(v) = value {
             token.resolve(v);
         }
-        page.destroy();
+        page.destroy(true);
         self.stack.clear();
         let mut boxed = fallback();
         self.init_page(&mut boxed).await;
@@ -287,7 +303,7 @@ impl Router {
                         current.page_mut().root.force_mouse_exit().await;
                     }
                     for (mut p, _) in self.stack.drain(..) {
-                        p.destroy();
+                        p.destroy(true);
                     }
                     let mut boxed = page;
                     self.init_page(&mut boxed).await;
@@ -302,7 +318,7 @@ impl Router {
                             current.page_mut().root.force_mouse_exit().await;
                         }
                         for (mut p, _) in self.stack.drain(..) {
-                            p.destroy();
+                            p.destroy(true);
                         }
                         let mut boxed = fallback;
                         self.init_page(&mut boxed).await;
@@ -338,6 +354,15 @@ impl Router {
             let (page, _) = &self.stack[i];
             page.draw(renderer, self.win_w as u32, self.win_h as u32);
             page.draw_debug(renderer, config);
+        }
+    }
+}
+
+impl Drop for Router {
+    fn drop(&mut self) {
+        // Drop 时 tokio runtime 可能已关闭，使用同步模式
+        for (mut page, _) in self.stack.drain(..) {
+            page.destroy(false);
         }
     }
 }

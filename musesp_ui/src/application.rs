@@ -305,6 +305,12 @@ impl ApplicationHandler for Application {
         let size = window.inner_size();
 
         self.init_router(size.width as i32, size.height as i32);
+
+        // 将窗口句柄注入 Router，以便页面可以控制系统光标
+        if let Some(ref router) = self.router {
+            router.borrow_mut().set_window(window.clone());
+        }
+
         let wgpu = self.rt_handle.block_on(WgpuRenderer::new(window.clone()));
 
         // ShaderLibrary 已由 WgpuRenderer 在初始化时一并创建，此处共享给 Router
@@ -389,7 +395,8 @@ impl ApplicationHandler for Application {
             WindowEvent::CursorMoved { .. }
             | WindowEvent::MouseInput { .. }
             | WindowEvent::MouseWheel { .. }
-            | WindowEvent::KeyboardInput { .. } => {
+            | WindowEvent::KeyboardInput { .. }
+            | WindowEvent::ModifiersChanged(_) => {
                 if let Some(ref router) = self.router {
                     self.rt_handle
                         .block_on(router.borrow_mut().dispatch_event(&event));

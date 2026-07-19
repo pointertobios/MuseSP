@@ -42,15 +42,103 @@ const MAX_INDICES_PER_LINE: u32 = MAX_SUBDIVISIONS_LINE * 2; // 512
 
 // ── 几何常量 ──────────────────────────────────────────────────────────
 
-const CAMERA_EYE: [f32; 3] = [4.0, 3.0, 4.0];
-const CAMERA_TARGET: [f32; 3] = [0.0, 0.0, 0.0];
-const CAMERA_UP: [f32; 3] = [0.0, 1.0, 0.0];
-const FOV_DEGREES: f32 = 60.0;
 const NEAR: f32 = 0.1;
-const FAR: f32 = 100.0;
-const ASPECT: f32 = 16.0 / 9.0;
+const FAR: f32 = 200.0;
 const SUB_GRID_SIZE: u32 = 6;
-const TAU: f32 = 2.0 * PI;
+
+// ── 摄像机 ────────────────────────────────────────────────────────────
+
+/// 摄像机运行模式
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CameraMode {
+    /// 正常游戏：准星跟随鼠标，九宫格动态更新
+    Playing,
+    /// 调整模式：摄像机可移动，九宫格固定在切换前位置
+    Adjusting,
+}
+
+/// 摄像机状态（动态可调）
+#[derive(Debug, Clone)]
+pub struct CameraState {
+    pub eye: [f32; 3],
+    /// 摄像机朝向（单位向量，从 eye 指向观察方向）
+    pub direction: [f32; 3],
+    pub up: [f32; 3],
+    pub fov_degrees: f32,
+}
+
+impl CameraState {
+    pub fn from_config(cam: &musesp_config::config::CameraConfig) -> Self {
+        CameraState {
+            eye: cam.eye,
+            direction: cam.direction,
+            up: cam.up,
+            fov_degrees: cam.fov_degrees,
+        }
+    }
+
+    /// 计算 view_proj 矩阵
+    pub fn view_proj(&self, aspect: f32) -> [[f32; 4]; 4] {
+        let proj = perspective(self.fov_degrees.to_radians(), aspect, NEAR, FAR);
+        let target = add(self.eye, self.direction);
+        let view = look_at(self.eye, target, self.up);
+        mul4(&proj, &view)
+    }
+
+    /// 摄像机前方方向（归一化）
+    pub fn forward(&self) -> [f32; 3] {
+        self.direction
+    }
+
+    /// 摄像机右方向
+    pub fn right(&self) -> [f32; 3] {
+        normalize(cross(self.direction, self.up))
+    }
+
+    /// 移动摄像机（只移动 eye，方向不变）
+    pub fn translate(&mut self, delta: [f32; 3]) {
+        self.eye[0] += delta[0];
+        self.eye[1] += delta[1];
+        self.eye[2] += delta[2];
+    }
+
+    /// 旋转摄像机朝向（第一人称视角），角度增量（弧度）
+    /// delta_yaw: 水平旋转，delta_pitch: 垂直旋转
+    pub fn rotate_view(&mut self, delta_yaw: f32, delta_pitch: f32) {
+        // 限制 pitch 范围，防止翻转
+        let current_pitch = self.direction[1].asin();
+        let max_delta = 1.5 - current_pitch;
+        let min_delta = -1.5 - current_pitch;
+        let delta_pitch = delta_pitch.clamp(min_delta, max_delta);
+
+        // Yaw：绕世界 Y 轴 (0,1,0) 旋转 direction
+        let cos_y = delta_yaw.cos();
+        let sin_y = delta_yaw.sin();
+        let fwd: [f32; 3] = [
+            self.direction[0] * cos_y + self.direction[2] * sin_y,
+            self.direction[1],
+            -self.direction[0] * sin_y + self.direction[2] * cos_y,
+        ];
+        let fwd = normalize(fwd);
+
+        // Pitch：绕摄像机右轴旋转（Rodrigues 公式，k·v=0 简化）
+        let right = normalize(cross(fwd, self.up));
+        let cos_p = delta_pitch.cos();
+        let sin_p = delta_pitch.sin();
+        let k_cross_v = cross(right, fwd);
+
+        self.direction = normalize([
+            fwd[0] * cos_p + k_cross_v[0] * sin_p,
+            fwd[1] * cos_p + k_cross_v[1] * sin_p,
+            fwd[2] * cos_p + k_cross_v[2] * sin_p,
+        ]);
+    }
+
+    /// 调整 FOV
+    pub fn adjust_fov(&mut self, delta: f32) {
+        self.fov_degrees = (self.fov_degrees + delta).clamp(10.0, 120.0);
+    }
+}
 
 // ── 类型定义 ──────────────────────────────────────────────────────────
 
@@ -156,6 +244,7 @@ struct SphericalVertex {
 }
 
 impl SphericalVertex {
+    #[allow(dead_code)]
     fn new(r: f32, theta: f32, phi: f32, color: [f32; 4]) -> Self {
         SphericalVertex {
             r,
@@ -214,119 +303,303 @@ struct SubdivideParams {
 
 // ── 几何生成 ──────────────────────────────────────────────────────────
 
-fn hemisphere(theta_bands: u32, phi_steps: u32, rot_phi: f32) -> (Vec<SphericalVertex>, Vec<u32>) {
-    let r = 1.0f32;
-    let mut v = Vec::with_capacity(((theta_bands + 1) * phi_steps) as usize);
-    for i in 0..=theta_bands {
-        let th = (i as f32 / theta_bands as f32) * PI;
-        for j in 0..phi_steps {
-            let bp = -PI / 2.0 + (j as f32 / phi_steps as f32) * PI;
-            v.push(SphericalVertex::new(
-                r,
-                th,
-                (bp + rot_phi) % TAU,
-                hemi_color(th, bp),
-            ));
-        }
-    }
-    let mut idx = Vec::with_capacity((theta_bands * phi_steps * 6) as usize);
-    for i in 0..theta_bands {
-        for j in 0..phi_steps {
-            let jn = (j + 1) % phi_steps;
-            let (tl, tr, bl, br) = (
-                i * phi_steps + j,
-                i * phi_steps + jn,
-                (i + 1) * phi_steps + j,
-                (i + 1) * phi_steps + jn,
-            );
-            idx.push(tl);
-            idx.push(br);
-            idx.push(bl);
-            idx.push(tl);
-            idx.push(tr);
-            idx.push(br);
-        }
-    }
-    (v, idx)
+#[allow(dead_code)]
+fn hemisphere(_theta_bands: u32, _phi_steps: u32, _rot_phi: f32) -> (Vec<SphericalVertex>, Vec<u32>) {
+    // 测试几何已移除，由 gameplay 逻辑提供
+    (Vec::new(), Vec::new())
 }
 
-fn hemi_color(theta: f32, phi: f32) -> [f32; 4] {
-    let tp = (phi + PI / 2.0) / PI;
-    let tt = theta / PI;
-    let h = tp * 6.0;
-    let c = 1.0;
-    let x = c * (1.0 - (h % 2.0 - 1.0).abs());
-    let (r1, g1, b1) = if h < 1.0 {
-        (c, x, 0.0)
-    } else if h < 2.0 {
-        (x, c, 0.0)
-    } else if h < 3.0 {
-        (0.0, c, x)
-    } else if h < 4.0 {
-        (0.0, x, c)
-    } else if h < 5.0 {
-        (x, 0.0, c)
+fn all_geometry(_elapsed_secs: f32) -> (Vec<SphericalVertex>, Vec<u32>) {
+    // 测试几何已移除
+    (Vec::new(), Vec::new())
+}
+
+// ── 玩法状态 ──────────────────────────────────────────────────────────
+
+/// 全局玩法状态（线程安全）。
+#[derive(Debug, Clone)]
+pub struct GameplayState {
+    /// 鼠标屏幕坐标（像素）
+    pub mouse_screen: Option<(f32, f32)>,
+    /// 球面拾取点 (theta, phi)，弧度
+    pub picked_spherical: Option<(f32, f32)>,
+    /// 九宫格每格角尺寸（弧度）
+    #[allow(dead_code)]
+    pub grid_cell_angular: f32,
+    /// 判定球面半径
+    pub sphere_radius: f32,
+    /// 屏幕尺寸
+    pub screen_size: (f32, f32),
+    /// 摄像机状态
+    pub camera: CameraState,
+    /// 摄像机模式
+    pub camera_mode: CameraMode,
+}
+
+impl GameplayState {
+    pub fn new() -> Self {
+        GameplayState {
+            mouse_screen: None,
+            picked_spherical: None,
+            grid_cell_angular: 12.0_f32.to_radians(),
+            sphere_radius: 20.0,
+            screen_size: (1920.0, 1080.0),
+            camera: CameraState {
+                eye: [35.0, 25.0, 35.0],
+                direction: normalize(sub([0.0, 0.0, 0.0], [35.0, 25.0, 35.0])),
+                up: [0.0, 1.0, 0.0],
+                fov_degrees: 60.0,
+            },
+            camera_mode: CameraMode::Playing,
+        }
+    }
+
+    /// 用配置文件中的摄像机参数初始化
+    pub fn apply_camera_config(&mut self, cam: &musesp_config::config::CameraConfig) {
+        self.camera = CameraState::from_config(cam);
+    }
+}
+
+use std::sync::Mutex;
+static GAMEPLAY_STATE: std::sync::OnceLock<Arc<Mutex<GameplayState>>> = std::sync::OnceLock::new();
+
+pub fn init_gameplay_state() -> Arc<Mutex<GameplayState>> {
+    GAMEPLAY_STATE
+        .get_or_init(|| Arc::new(Mutex::new(GameplayState::new())))
+        .clone()
+}
+
+pub fn get_gameplay_state() -> Option<Arc<Mutex<GameplayState>>> {
+    GAMEPLAY_STATE.get().cloned()
+}
+
+// ── 球面拾取 ──────────────────────────────────────────────────────────
+
+/// 屏幕坐标 → 球面交点 (theta, phi)。
+/// 返回值：None 表示射线未命中球面。
+pub fn pick_sphere(
+    screen_pos: (f32, f32),
+    screen_size: (f32, f32),
+    view_proj: &[[f32; 4]; 4],
+    camera_eye: [f32; 3],
+    sphere_radius: f32,
+) -> Option<(f32, f32)> {
+    // 1. NDC
+    let ndc_x = 2.0 * screen_pos.0 / screen_size.0 - 1.0;
+    let ndc_y = 1.0 - 2.0 * screen_pos.1 / screen_size.1;
+
+    // 2. 逆 view_proj
+    let inv_vp = inverse4(view_proj)?;
+
+    // 3. 近平面点 → 世界射线方向（wgpu NDC z 范围 [0, 1]，近平面 z=0）
+    let near_ndc = [ndc_x, ndc_y, 0.0, 1.0f32];
+    let near_world = transform_point(&inv_vp, &near_ndc);
+    let ray_dir = normalize(sub(near_world, camera_eye));
+
+    // 4. 射线-球面求交：|eye + t*dir|^2 = r^2
+    let oc = camera_eye; // sphere center = origin
+    let a = dot(ray_dir, ray_dir);
+    let b = 2.0 * dot(oc, ray_dir);
+    let c = dot(oc, oc) - sphere_radius * sphere_radius;
+    let discriminant = b * b - 4.0 * a * c;
+
+    if discriminant < 0.0 {
+        return None;
+    }
+
+    let sqrt_d = discriminant.sqrt();
+    let t0 = (-b - sqrt_d) / (2.0 * a);
+    let t1 = (-b + sqrt_d) / (2.0 * a);
+
+    // 选择更近的正交点
+    let t = if t0 > 0.0 {
+        t0
+    } else if t1 > 0.0 {
+        t1
     } else {
-        (c, 0.0, x)
+        return None;
     };
-    let bright = 0.3 + 0.7 * (tt * (1.0 - tt) * 4.0).sqrt();
-    [r1 * bright, g1 * bright, b1 * bright, 0.6]
-}
 
-fn all_geometry(elapsed_secs: f32) -> (Vec<SphericalVertex>, Vec<u32>) {
-    let rot = elapsed_secs * 0.8;
-    hemisphere(10, 20, rot)
-}
-
-fn reference_lines() -> (Vec<LineVertex>, u32) {
-    let equator_color = [1.0, 0.1, 0.1, 0.9];
-    let polar_color = [0.1, 0.3, 1.0, 0.9];
-    let verts = vec![
-        LineVertex {
-            r: 1.0,
-            theta: PI / 2.0,
-            phi: 0.0,
-            _pad: 0.0,
-            color: equator_color,
-        },
-        LineVertex {
-            r: 1.0,
-            theta: PI / 2.0,
-            phi: TAU,
-            _pad: 0.0,
-            color: equator_color,
-        },
-        LineVertex {
-            r: 1.0,
-            theta: 0.0,
-            phi: 0.0,
-            _pad: 0.0,
-            color: polar_color,
-        },
-        LineVertex {
-            r: 0.0,
-            theta: 0.0,
-            phi: 0.0,
-            _pad: 0.0,
-            color: polar_color,
-        },
-        LineVertex {
-            r: 0.0,
-            theta: PI,
-            phi: 0.0,
-            _pad: 0.0,
-            color: polar_color,
-        },
-        LineVertex {
-            r: 1.0,
-            theta: PI,
-            phi: 0.0,
-            _pad: 0.0,
-            color: polar_color,
-        },
+    // 5. 交点 Cartesian → 球坐标 (theta, phi)
+    let hit = [
+        camera_eye[0] + t * ray_dir[0],
+        camera_eye[1] + t * ray_dir[1],
+        camera_eye[2] + t * ray_dir[2],
     ];
+    let r = (hit[0] * hit[0] + hit[1] * hit[1] + hit[2] * hit[2]).sqrt();
+    if r < 1e-6 {
+        return None;
+    }
+    let theta = f32::acos(hit[1] / r); // polar angle from +Y
+    let phi = f32::atan2(hit[2], hit[0]); // azimuth in XZ plane
+
+    Some((theta, phi))
+}
+
+// ── 九宫格线生成 ────────────────────────────────────────────────────
+
+/// 在球面上生成 3×3 九宫格的线顶点（用于 line pipeline）。
+/// center: (theta, phi) 九宫格中心
+/// cell_angular: 每格角尺寸（弧度）
+/// radius: 球面半径
+/// color: 线条颜色
+pub fn judgment_grid_lines(
+    center: (f32, f32),
+    cell_angular: f32,
+    radius: f32,
+    color: [f32; 4],
+) -> (Vec<LineVertex>, u32) {
+    let (ct, cp) = center;
+    let half = 1.5 * cell_angular;
+
+    let t_min = ct - half;
+    let t_max = ct + half;
+    let p_min = cp - half;
+    let p_max = cp + half;
+
+    let mut verts = Vec::new();
+
+    // 4 条水平线（固定 theta，变化 phi）
+    for i in 0..4 {
+        let t = t_min + i as f32 * cell_angular;
+        verts.push(LineVertex {
+            r: radius,
+            theta: t.clamp(0.0, PI),
+            phi: p_min,
+            _pad: 0.0,
+            color,
+        });
+        verts.push(LineVertex {
+            r: radius,
+            theta: t.clamp(0.0, PI),
+            phi: p_max,
+            _pad: 0.0,
+            color,
+        });
+    }
+    // 4 条竖直线（固定 phi，变化 theta）
+    for i in 0..4 {
+        let p = p_min + i as f32 * cell_angular;
+        verts.push(LineVertex {
+            r: radius,
+            theta: t_min.clamp(0.0, PI),
+            phi: p,
+            _pad: 0.0,
+            color,
+        });
+        verts.push(LineVertex {
+            r: radius,
+            theta: t_max.clamp(0.0, PI),
+            phi: p,
+            _pad: 0.0,
+            color,
+        });
+    }
+
     let line_count = (verts.len() / 2) as u32;
     (verts, line_count)
+}
+
+// ── 4×4 矩阵求逆 ────────────────────────────────────────────────────
+
+fn inverse4(m: &[[f32; 4]; 4]) -> Option<[[f32; 4]; 4]> {
+    let mut inv = [[0.0f32; 4]; 4];
+    let det;
+    let mut tmp = [0.0f32; 12]; // 用于子矩阵计算
+    let src = [
+        m[0][0], m[1][0], m[2][0], m[3][0], m[0][1], m[1][1], m[2][1], m[3][1], m[0][2], m[1][2],
+        m[2][2], m[3][2], m[0][3], m[1][3], m[2][3], m[3][3],
+    ];
+
+    // 前 8 个 cofactor 的临时计算
+    tmp[0] = src[10] * src[15];
+    tmp[1] = src[11] * src[14];
+    tmp[2] = src[9] * src[15];
+    tmp[3] = src[11] * src[13];
+    tmp[4] = src[9] * src[14];
+    tmp[5] = src[10] * src[13];
+    tmp[6] = src[8] * src[15];
+    tmp[7] = src[11] * src[12];
+    tmp[8] = src[8] * src[14];
+    tmp[9] = src[10] * src[12];
+    tmp[10] = src[8] * src[13];
+    tmp[11] = src[9] * src[12];
+
+    inv[0][0] = tmp[0] * src[5] + tmp[3] * src[6] + tmp[4] * src[7];
+    inv[0][0] -= tmp[1] * src[5] + tmp[2] * src[6] + tmp[5] * src[7];
+    inv[0][1] = tmp[1] * src[4] + tmp[6] * src[6] + tmp[9] * src[7];
+    inv[0][1] -= tmp[0] * src[4] + tmp[7] * src[6] + tmp[8] * src[7];
+    inv[0][2] = tmp[2] * src[4] + tmp[7] * src[5] + tmp[10] * src[7];
+    inv[0][2] -= tmp[3] * src[4] + tmp[6] * src[5] + tmp[11] * src[7];
+    inv[0][3] = tmp[5] * src[4] + tmp[8] * src[5] + tmp[11] * src[6];
+    inv[0][3] -= tmp[4] * src[4] + tmp[9] * src[5] + tmp[10] * src[6];
+    inv[1][0] = tmp[1] * src[1] + tmp[2] * src[2] + tmp[5] * src[3];
+    inv[1][0] -= tmp[0] * src[1] + tmp[3] * src[2] + tmp[4] * src[3];
+    inv[1][1] = tmp[0] * src[0] + tmp[7] * src[2] + tmp[8] * src[3];
+    inv[1][1] -= tmp[1] * src[0] + tmp[6] * src[2] + tmp[9] * src[3];
+    inv[1][2] = tmp[3] * src[0] + tmp[6] * src[1] + tmp[11] * src[3];
+    inv[1][2] -= tmp[2] * src[0] + tmp[7] * src[1] + tmp[10] * src[3];
+    inv[1][3] = tmp[4] * src[0] + tmp[9] * src[1] + tmp[10] * src[2];
+    inv[1][3] -= tmp[5] * src[0] + tmp[8] * src[1] + tmp[11] * src[2];
+
+    // 后 8 个 cofactor
+    tmp[0] = src[2] * src[7];
+    tmp[1] = src[3] * src[6];
+    tmp[2] = src[1] * src[7];
+    tmp[3] = src[3] * src[5];
+    tmp[4] = src[1] * src[6];
+    tmp[5] = src[2] * src[5];
+    tmp[6] = src[0] * src[7];
+    tmp[7] = src[3] * src[4];
+    tmp[8] = src[0] * src[6];
+    tmp[9] = src[2] * src[4];
+    tmp[10] = src[0] * src[5];
+    tmp[11] = src[1] * src[4];
+
+    inv[2][0] = tmp[0] * src[13] + tmp[3] * src[14] + tmp[4] * src[15];
+    inv[2][0] -= tmp[1] * src[13] + tmp[2] * src[14] + tmp[5] * src[15];
+    inv[2][1] = tmp[1] * src[12] + tmp[6] * src[14] + tmp[9] * src[15];
+    inv[2][1] -= tmp[0] * src[12] + tmp[7] * src[14] + tmp[8] * src[15];
+    inv[2][2] = tmp[2] * src[12] + tmp[7] * src[13] + tmp[10] * src[15];
+    inv[2][2] -= tmp[3] * src[12] + tmp[6] * src[13] + tmp[11] * src[15];
+    inv[2][3] = tmp[5] * src[12] + tmp[8] * src[13] + tmp[11] * src[14];
+    inv[2][3] -= tmp[4] * src[12] + tmp[9] * src[13] + tmp[10] * src[14];
+    inv[3][0] = tmp[2] * src[10] + tmp[5] * src[11] + tmp[1] * src[9];
+    inv[3][0] -= tmp[4] * src[11] + tmp[0] * src[9] + tmp[3] * src[10];
+    inv[3][1] = tmp[8] * src[11] + tmp[0] * src[8] + tmp[7] * src[10];
+    inv[3][1] -= tmp[6] * src[10] + tmp[9] * src[11] + tmp[1] * src[8];
+    inv[3][2] = tmp[6] * src[9] + tmp[11] * src[11] + tmp[3] * src[8];
+    inv[3][2] -= tmp[10] * src[11] + tmp[2] * src[8] + tmp[7] * src[9];
+    inv[3][3] = tmp[10] * src[10] + tmp[4] * src[8] + tmp[9] * src[9];
+    inv[3][3] -= tmp[8] * src[9] + tmp[11] * src[10] + tmp[5] * src[8];
+
+    det = src[0] * inv[0][0] + src[1] * inv[0][1] + src[2] * inv[0][2] + src[3] * inv[0][3];
+    if det.abs() < 1e-10 {
+        return None;
+    }
+    let det_inv = 1.0 / det;
+    for row in 0..4 {
+        for col in 0..4 {
+            inv[row][col] *= det_inv;
+        }
+    }
+    Some(inv)
+}
+
+fn transform_point(m: &[[f32; 4]; 4], v: &[f32; 4]) -> [f32; 3] {
+    let w = m[0][3] * v[0] + m[1][3] * v[1] + m[2][3] * v[2] + m[3][3] * v[3];
+    let inv_w = if w.abs() > 1e-10 { 1.0 / w } else { 1.0 };
+    [
+        (m[0][0] * v[0] + m[1][0] * v[1] + m[2][0] * v[2] + m[3][0] * v[3]) * inv_w,
+        (m[0][1] * v[0] + m[1][1] * v[1] + m[2][1] * v[2] + m[3][1] * v[3]) * inv_w,
+        (m[0][2] * v[0] + m[1][2] * v[1] + m[2][2] * v[2] + m[3][2] * v[3]) * inv_w,
+    ]
+}
+
+#[allow(dead_code)]
+fn reference_lines() -> (Vec<LineVertex>, u32) {
+    // 测试参考线已移除
+    (Vec::new(), 0)
 }
 
 // ── 矩阵运算（列优先，适配 wgpu / WGSL）───────────────────────────────
@@ -366,6 +639,9 @@ fn mul4(a: &[[f32; 4]; 4], b: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
 fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
+fn add(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
 fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
@@ -391,21 +667,81 @@ pub struct PrecomputedGeometry {
     pub view_proj: [[f32; 4]; 4],
     pub line_endpoints: Vec<u8>,
     pub line_count: u32,
+    /// 摄像机位置（用于 pick_sphere 和 finalize_snapshot）
+    pub camera_eye: [f32; 3],
 }
 
-pub fn precompute_geometry(elapsed_secs: f32) -> PrecomputedGeometry {
-    let (verts, indices) = all_geometry(elapsed_secs);
-    let (lverts, lcount) = reference_lines();
-    let proj = perspective(FOV_DEGREES.to_radians(), ASPECT, NEAR, FAR);
-    let view = look_at(CAMERA_EYE, CAMERA_TARGET, CAMERA_UP);
+pub fn precompute_geometry(_elapsed_secs: f32) -> PrecomputedGeometry {
+    let (verts, indices) = all_geometry(_elapsed_secs);
+
+    // 从 GameplayState 获取摄像机状态
+    let state_arc = get_gameplay_state();
+    let mut gs_lock = state_arc.as_ref().map(|a| a.lock().unwrap());
+
+    // 使用动态摄像机参数计算 view_proj
+    let (vp, cam_eye, _aspect) = if let Some(ref gs) = gs_lock {
+        let cam = &gs.camera;
+        let aspect = if gs.screen_size.1 > 0.0 {
+            gs.screen_size.0 / gs.screen_size.1
+        } else {
+            16.0 / 9.0
+        };
+        (cam.view_proj(aspect), cam.eye, aspect)
+    } else {
+        // 回退：使用默认摄像机
+        let default_cam = CameraState {
+            eye: [35.0, 25.0, 35.0],
+            direction: normalize(sub([0.0, 0.0, 0.0], [35.0, 25.0, 35.0])),
+            up: [0.0, 1.0, 0.0],
+            fov_degrees: 60.0,
+        };
+        (default_cam.view_proj(16.0 / 9.0), default_cam.eye, 16.0 / 9.0)
+    };
+
     let tri_count = (indices.len() / 3) as u32;
+
+    // 从玩法状态生成九宫格线
+    let pick: Option<(f32, f32)>;
+    if let Some(ref mut gs) = gs_lock {
+        if gs.camera_mode == CameraMode::Playing {
+            // 正常游戏：根据鼠标位置更新九宫格
+            if let Some(ms) = gs.mouse_screen {
+                gs.picked_spherical = pick_sphere(
+                    ms,
+                    gs.screen_size,
+                    &vp,
+                    cam_eye,
+                    gs.sphere_radius,
+                );
+            }
+        }
+        // Adjusting 模式：保持 picked_spherical 不变（九宫格冻结）
+        pick = gs.picked_spherical;
+    } else {
+        pick = None;
+    }
+
+    // 鼠标未命中球面时不显示九宫格
+    let (line_verts, line_count) = if let Some(center) = pick {
+        let cell_angular = 12.0_f32.to_radians();
+        let (gv, lc) = judgment_grid_lines(
+            center,
+            cell_angular,
+            20.0,
+            [1.0, 1.0, 1.0, 0.8],
+        );
+        (gv, lc)
+    } else {
+        (Vec::new(), 0)
+    };
     PrecomputedGeometry {
         coarse_verts: bytemuck::cast_slice(&verts).to_vec(),
         coarse_indices: indices,
         coarse_tri_count: tri_count,
-        view_proj: mul4(&proj, &view),
-        line_endpoints: bytemuck::cast_slice(&lverts).to_vec(),
-        line_count: lcount,
+        view_proj: vp,
+        line_endpoints: bytemuck::cast_slice(&line_verts).to_vec(),
+        line_count,
+        camera_eye: cam_eye,
     }
 }
 
@@ -416,7 +752,7 @@ pub fn finalize_snapshot(
 ) -> ComputeSnapshot {
     let p = SubdivideParams {
         view_proj: geo.view_proj,
-        camera_eye: CAMERA_EYE,
+        camera_eye: geo.camera_eye,
         _pad2: 0.0,
         triangle_count: geo.coarse_tri_count,
         sub_grid_size: SUB_GRID_SIZE,
